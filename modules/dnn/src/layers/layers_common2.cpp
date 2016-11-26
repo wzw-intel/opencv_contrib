@@ -39,63 +39,13 @@
 //
 //M*/
 
-#ifndef __OPENCV_DNN_LAYERS_LAYERS_COMMON_HPP__
-#define __OPENCV_DNN_LAYERS_LAYERS_COMMON_HPP__
-#include <opencv2/dnn.hpp>
-#include "op_blas.hpp"
-#include "op_im2col.hpp"
-#include "opencv2/core/types_c.h"
+#include "../precomp.hpp"
 
 namespace cv
 {
-namespace dnn
+namespace dnn2
 {
 
-void getConvolutionKernelParams(LayerParams &params, int &kernelH, int &kernelW, int &padH, int &padW, int &strideH, int &strideW, int &dilationH, int &dilationW);
-
-void getPoolingKernelParams(LayerParams &params, int &kernelH, int &kernelW, bool &globalPooling, int &padH, int &padW, int &strideH, int &strideW);
 
 }
 }
-
-/*
-namespace cv {
-namespace dnn2 {
-
-static inline void getMatSize(const Mat& m, vector<int>& size)
-{
-    int channels = m.channels();
-    int i, dims = m.dims;
-    int mc = (int)(channels > 1);
-    size.resize(dims + mc);
-    for( i = 0; i < dims; i++ )
-        size[i + mc] = m.size.p[i];
-    if( mc )
-        size[0] = channels;
-}
-    
-}
-}*/
-
-namespace cv {
-namespace dnn2 {
-
-static inline size_t getStep(const Mat& m, int axis)
-{
-    int dims = m.dims;
-    return axis+1 < dims ? m.step.p[axis]/m.elemSize() : 1;
-}
-
-static inline size_t matSize(const vector<int>& sizes)
-{
-    size_t j, n = sizes.size(), p = sizes[0];
-    for( j = 1; j < n; j++ )
-        p *= sizes[j];
-    return p;
-}
-
-}
-}
-
-
-#endif

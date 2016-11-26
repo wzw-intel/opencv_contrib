@@ -60,5 +60,6 @@
   @}
 */
 #include <opencv2/dnn/dnn.hpp>
+#include <opencv2/dnn/dnn2.hpp>
 
 #endif /* __OPENCV_DNN_HPP__ */

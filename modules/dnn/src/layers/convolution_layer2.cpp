@@ -407,8 +407,9 @@ public:
         }
         else
         {
-            Mat buf0(
-            gemmW
+            Mat buf0;
+            gemmWBias(weights, Mat(), src, buf0);
+            row2im(buf0, dst);
         }
     }
 };

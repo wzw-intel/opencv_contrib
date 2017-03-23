@@ -41,7 +41,6 @@
 
 #include "../precomp.hpp"
 #include "layers_common.hpp"
-#include "slice_layer.hpp"
 #include <opencv2/core/ocl.hpp>
 #include <opencv2/dnn/shape_utils.hpp>
 
@@ -50,97 +49,108 @@ namespace cv
 namespace dnn
 {
 
-SliceLayerImpl::SliceLayerImpl(int axis_ /*= 1*/)
+class SliceLayerImpl : public SliceLayer
 {
-    axis = axis_;
-}
-
-SliceLayerImpl::SliceLayerImpl(int axis_, const std::vector<int> &sliceIndices_)
-{
-    axis = axis_;
-    sliceIndices = sliceIndices_;
-}
-
-void SliceLayerImpl::allocate(const std::vector<Blob*> &inputs, std::vector<Blob> &outputs)
-{
-    CV_Assert(inputs.size() == 1);
-
-    const Blob &inpBlob = *inputs[0];
-    useOpenCL = ocl::useOpenCL() && inpBlob.getState() == Blob::HEAD_AT_UMAT;
-
-    axisIdx = inpBlob.canonicalAxis(axis);
-    int axisSize = inpBlob.size(axisIdx);
-    BlobShape inpShape = inpBlob.shape();
-    int allocFlags = useOpenCL ? Blob::ALLOC_UMAT : Blob::ALLOC_MAT;
-
-    if (sliceIndices.size()) //divide blob with respect to passed parameters
+public:
+    SliceLayerImpl(int axis_, const std::vector<int> &sliceIndices_)
     {
-        std::vector<int> outAxisSize;
-        int prevSlice = 0;
+        axis = axis_;
+        sliceIndices = sliceIndices_;
+    }
 
-        for (size_t i = 0; i < sliceIndices.size(); i++)
+    void allocate(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+    {
+        CV_Assert(inputs.total() == 1);
+
+        Mat inpBlob = inputs.getMat(0);
+        int i, axisSize = inpBlob.size[axis];
+        std::vector<Mat>& outp = outputs.getMatVecRef();
+
+        std::vector<int> inpShape;
+        inpBlob.getShape(inpShape);
+
+        if (!sliceIndices.empty()) //divide blob with respect to passed parameters
         {
-            if (!(prevSlice < sliceIndices[i] && sliceIndices[i] < axisSize))
-                CV_Error(Error::StsBadArg, "Slice indices should be positive, increased and don't exceed size of sliced dimension");
+            std::vector<int> outAxisSize;
+            int prevSlice = 0;
 
-            outAxisSize.push_back(sliceIndices[i] - prevSlice);
-            prevSlice = sliceIndices[i];
+            for (i = 0; i < (int)sliceIndices.size(); i++)
+            {
+                if (!(prevSlice < sliceIndices[i] && sliceIndices[i] < axisSize))
+                    CV_Error(Error::StsBadArg, "Slice indices should be positive, increased and don't exceed size of sliced dimension");
+
+                outAxisSize.push_back(sliceIndices[i] - prevSlice);
+                prevSlice = sliceIndices[i];
+            }
+            outAxisSize.push_back(axisSize - prevSlice);
+
+            int outdims = outAxisSize.size();
+            outp.resize(outdims);
+            for (i = 0; i < outdims; i++)
+            {
+                inpShape[axis] = outAxisSize[i];
+                outp[i].create(inpBlob.dims, &inpShape[0], inpBlob.type());
+            }
         }
-        outAxisSize.push_back(axisSize - prevSlice);
-
-        outputs.resize(outAxisSize.size());
-        for (size_t i = 0; i < outAxisSize.size(); i++)
+        else //divide blob with respect to count of output blobs
         {
-            inpShape[axisIdx] = outAxisSize[i];
-            outputs[i].create(inpShape, inpBlob.type(), allocFlags);
+            int noutputs = (int)outp.size();
+            CV_Assert(noutputs > 0 && axisSize % noutputs == 0);
+            int outAxisSize = axisSize / noutputs;
+            
+            for (i = 0; i < noutputs; i++)
+            {
+                inpShape[axis] = outAxisSize;
+                outp[i].create(inpBlob.dims, &inpShape[0], inpBlob.type());
+            }
         }
     }
-    else //divide blob with respect to count of output blobs
-    {
-        CV_Assert(outputs.size() > 0 && axisSize % outputs.size() == 0);
-        int outAxisSize = axisSize / (int)outputs.size();
 
-        for (size_t i = 0; i < outputs.size(); i++)
+    void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+    {
+        size_t i, noutputs = outputs.total();
+        Mat inpMat = inputs.getMat(0);
+        std::vector<Range> ranges(inpMat.dims, Range::all());
+
+        ranges[axis].start = 0;
+        for (i = 0; i < noutputs; i++)
         {
-            inpShape[axisIdx] = outAxisSize;
-            outputs[i].create(inpShape, inpBlob.type(), allocFlags);
+            Mat outp = outputs.getMat(i);
+            ranges[axis].end = ranges[axis].start + outp.size[axis];
+            inpMat(&ranges[0]).copyTo(outp);
+            ranges[axis].start = ranges[axis].end;
         }
     }
-}
-
-void SliceLayerImpl::forward(std::vector<Blob*> &inputs, std::vector<Blob> &outputs)
-{
-    #ifdef HAVE_OPENCL
-    if (useOpenCL)
-        forward_<UMat>(inputs, outputs);
-    else
-    #endif
-        forward_<Mat>(inputs, outputs);
-}
-
-template<typename XMat>
-void SliceLayerImpl::forward_(std::vector<Blob*> &inputs, std::vector<Blob> &outputs)
-{
-    const XMat& inpMat = inputs[0]->getRefConst<XMat>();
-    std::vector<Range> ranges(inputs[0]->dims(), Range::all());
-
-    ranges[axisIdx].start = 0;
-    for (size_t i = 0; i < outputs.size(); i++)
-    {
-        ranges[axisIdx].end = ranges[axisIdx].start + outputs[i].size(axisIdx);
-        inpMat(&ranges[0]).copyTo(outputs[i].getRef<XMat>());
-        ranges[axisIdx].start = ranges[axisIdx].end;
-    }
-}
+};
 
 Ptr<SliceLayer> SliceLayer::create(int axis)
 {
-    return Ptr<SliceLayer>(new SliceLayerImpl(axis));
+    return Ptr<SliceLayer>(new SliceLayerImpl(axis, std::vector<int>()));
 }
 
-Ptr<SliceLayer> SliceLayer::create(int axis, const std::vector<int> &sliceIndices)
+Ptr<SliceLayer> SliceLayer::create(int axis, const std::vector<int>& sliceIndices)
 {
     return Ptr<SliceLayer>(new SliceLayerImpl(axis, sliceIndices));
+}
+
+Ptr<SliceLayer> SliceLayer::create(const LayerParams& params)
+{
+    int axis = params.get<int>("axis", 1);
+    std::vector<int> sliceIndices;
+
+    if (params.has("slice_point"))
+    {
+        const DictValue &indicesValue = params.get("slice_point");
+        int i, n = indicesValue.size();
+        sliceIndices.resize(n);
+        for (i = 0; i < n; i++)
+            sliceIndices[i] = indicesValue.get<int>(i);
+    }
+
+    Ptr<SliceLayer> l(new SliceLayerImpl(axis, sliceIndices));
+    l->setParamsFrom(params);
+
+    return l;
 }
 
 }

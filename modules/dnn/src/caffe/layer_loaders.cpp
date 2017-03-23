@@ -9,9 +9,13 @@ namespace cv
 namespace dnn
 {
 
+#if 0
 //Layers
 
 //Convolution and Deconvolution
+Ptr<Layer> createConvolutionLayerFromCaffe(LayerParams &params);
+Ptr<Layer> createDeconvolutionLayerFromCaffe(LayerParams &params);
+
 static void initConvDeconvLayerFromCaffe(Ptr<BaseConvolutionLayer> l, LayerParams &params)
 {
     l->setParamsFrom(params);
@@ -31,7 +35,7 @@ static void initConvDeconvLayerFromCaffe(Ptr<BaseConvolutionLayer> l, LayerParam
 }
 
 template<>
-Ptr<Layer> createLayerFromCaffe<ConvolutionLayer>(LayerParams &params)
+Ptr<Layer> createLayerFromCaffe<ConvolutionLayer>(const LayerParams &params)
 {
     Ptr<BaseConvolutionLayer> l = ConvolutionLayer::create();
     initConvDeconvLayerFromCaffe(l, params);
@@ -86,9 +90,9 @@ Ptr<Layer> createLayerFromCaffe<SoftmaxLayer>(LayerParams &params)
 }
 
 template<> //InnerProduct specialization
-Ptr<Layer> createLayerFromCaffe<InnerProductLayer>(LayerParams &params)
+Ptr<Layer> createLayerFromCaffe<FullyConnectedLayer>(LayerParams &params)
 {
-    const std::vector<Blob> &blobs = params.blobs;
+    const std::vector<Mat> &blobs = params.blobs;
     CV_Assert(1 <= blobs.size() && blobs.size() <= 2);
 
     int numOutputs = params.get<int>("num_output");
@@ -96,14 +100,14 @@ Ptr<Layer> createLayerFromCaffe<InnerProductLayer>(LayerParams &params)
     bool bias = params.get<bool>("bias_term", true);
     int axis = params.get<int>("axis", 1);
 
-    CV_Assert(blobs[0].dims() >= 2 && (size_t)(innerSize * numOutputs) == blobs[0].total());
+    CV_Assert(blobs[0].dims >= 2 && (size_t)(innerSize * numOutputs) == blobs[0].total());
     CV_Assert(!bias || (blobs.size() == 2 && (size_t)numOutputs == blobs[1].total()));
 
-    Ptr<InnerProductLayer> l = InnerProductLayer::create(axis);
+    Ptr<FullyConnectedLayer> l = FullyConnectedLayer::create(axis);
     l->setParamsFrom(params);
-    l->blobs[0].reshape(Shape(numOutputs, innerSize));
+    l->blobs[0].reshape(1, numOutputs);
     if (bias)
-        l->blobs[1].reshape(Shape(1, numOutputs));
+        l->blobs[1].reshape(1, 1);
 
     return Ptr<Layer>(l);
 }
@@ -153,16 +157,15 @@ Ptr<Layer> createLayerFromCaffe<ReshapeLayer>(LayerParams &params)
     CV_Assert(numAxes >= -1);
     Range applyingRange = (numAxes == -1) ? Range(axis, INT_MAX) : Range(axis, axis + numAxes);
 
-    Shape newShape;
+    std::vector<int> newShape;
     if (params.has("dim"))
     {
         const DictValue &paramShape = params.get("dim");
-        newShape = Shape::all(paramShape.size());
-        for (int i = 0; i < paramShape.size(); i++)
+        int i, n = paramShape.size();
+        newShape.resize(n);
+        for (i = 0; i < n; i++)
             newShape[i] = paramShape.get<int>(i);
     }
-    else
-        newShape = Shape::all(0);
 
     return Ptr<Layer>(ReshapeLayer::create(newShape, applyingRange, enableReordering));
 }
@@ -252,40 +255,45 @@ Ptr<Layer> createLayerFromCaffe<CropLayer>(LayerParams& params)
     return Ptr<Layer>(CropLayer::create(start_axis, offset));
 }
 
-template<> //Eltwise specialization
-Ptr<Layer> createLayerFromCaffe<EltwiseLayer>(LayerParams& params)
+template<>
+Ptr<Layer> createLayerFromCaffe<ElemwiseLayer>(LayerParams& params)
 {
-    EltwiseLayer::EltwiseOp op = EltwiseLayer::SUM;
-    if (params.has("operation"))
-    {
-        String operation = params.get<String>("operation").toLowerCase();
-        if (operation == "prod")
-            op = EltwiseLayer::PROD;
-        else if (operation == "sum")
-            op = EltwiseLayer::SUM;
-        else if (operation == "max")
-            op = EltwiseLayer::MAX;
-        else
-            CV_Error(cv::Error::StsBadArg, "Unknown operaticon type \"" + operation + "\"");
-    }
+    String operation = params.has("operation") ?
+        params.get<String>("operation").toLowerCase() : "sum";
 
     std::vector<int> coeffs;
     if (params.has("coeff"))
     {
         DictValue paramCoeff = params.get("coeff");
-        coeffs.resize(paramCoeff.size(), 1);
-        for (int i = 0; i < paramCoeff.size(); i++)
-        {
+        int i, n = paramCoeff.size();
+        coeffs.resize(n);
+        for (i = 0; i < n; i++)
             coeffs[i] = paramCoeff.get<int>(i);
-        }
     }
-    return Ptr<Layer>(EltwiseLayer::create(op, coeffs));
+
+    Ptr<Layer> layer;
+    if (operation == "prod")
+    {
+        CV_Assert(coeffs.empty());
+        layer = ProdLayer::create();
+    }
+    else if (operation == "sum")
+        layer = SumLayer::create(coeffs);
+    else if (operation == "max")
+    {
+        CV_Assert(coeffs.empty());
+        layer = MaxLayer::create();
+    }
+    else
+        CV_Error(cv::Error::StsBadArg, "Unknown operaticon type \"" + operation + "\"");
+
+    return layer;
 }
 
 template<> //BatchNormLayer specialization
 Ptr<Layer> createLayerFromCaffe<BatchNormLayer>(LayerParams& params)
 {
-    const std::vector<Blob> &blobs = params.blobs;
+    const std::vector<Mat> &blobs = params.blobs;
     CV_Assert(blobs.size() == 4);
 
     float eps = params.get<float>("eps");
@@ -301,47 +309,75 @@ Ptr<Layer> createLayerFromCaffe<BatchNormLayer>(LayerParams& params)
 template<> //ChannelsPReLULayer specialization
 Ptr<Layer> createLayerFromCaffe<ChannelsPReLULayer>(LayerParams& params)
 {
-   CV_Assert(params.blobs.size() == 1);
-   Ptr<ChannelsPReLULayer> l = ChannelsPReLULayer::create();
-   l->setParamsFrom(params);
-
-   return Ptr<Layer>(l);
+    return ChannelsPReLULayer::create(params);
 }
 
 template<> //MaxUnpoolLayer specialization
 Ptr<Layer> createLayerFromCaffe<MaxUnpoolLayer>(LayerParams& params)
 {
-   Size outSize(params.get<int>("out_w"),
-                params.get<int>("out_h"));
-   Ptr<MaxUnpoolLayer> l = MaxUnpoolLayer::create(outSize);
+    Size outSize(params.get<int>("out_w"),
+                 params.get<int>("out_h"));
+    Ptr<MaxUnpoolLayer> l = MaxUnpoolLayer::create(outSize);
 
-   return Ptr<Layer>(l);
+    return Ptr<Layer>(l);
 }
 
+template<>
+Ptr<Layer> createLayerFromCaffe<PermuteLayer>(LayerParams& params)
+{
+    std::vector<int> order;
+    if (params.has("order"))
+    {
+        DictValue paramOrder = params.get("order");
+        size_t i, numAxes = paramOrder.size();
+
+        for (i = 0; i < numAxes; i++)
+        {
+            int currentOrder = paramOrder.get<int>(i);
+            order.push_back(currentOrder);
+        }
+    }
+
+    return PermuteLayer::create(order);
+}
+#endif
+
 //Explicit instantiation
-template Ptr<Layer> createLayerFromCaffe<ConvolutionLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<DeconvolutionLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<SoftmaxLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<InnerProductLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<LRNLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<MVNLayer>(LayerParams&);
+/*REG_RUNTIME_LAYER_FUNC(Slice,           createLayerFromCaffe<SliceLayer>);
+REG_RUNTIME_LAYER_FUNC(Split,           createLayerFromCaffe<SplitLayer>);
+REG_RUNTIME_LAYER_FUNC(Concat,          createLayerFromCaffe<ConcatLayer>);
+REG_RUNTIME_LAYER_FUNC(Reshape,         createLayerFromCaffe<ReshapeLayer>);
+REG_RUNTIME_LAYER_FUNC(Flatten,         createLayerFromCaffe<FlattenLayer>);
 
-template Ptr<Layer> createLayerFromCaffe<ConcatLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<SliceLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<SplitLayer>(LayerParams&);
+REG_RUNTIME_LAYER_FUNC(Convolution,     createLayerFromCaffe<ConvolutionLayer>);
+REG_RUNTIME_LAYER_FUNC(Deconvolution,   createLayerFromCaffe<DeconvolutionLayer>);
+REG_RUNTIME_LAYER_FUNC(Pooling,         createLayerFromCaffe<PoolingLayer>);
+REG_RUNTIME_LAYER_FUNC(LRN,             createLayerFromCaffe<LRNLayer>);
+REG_RUNTIME_LAYER_FUNC(FullyConnected,  createLayerFromCaffe<FullyConnectedLayer>);*/
 
-template Ptr<Layer> createLayerFromCaffe<ReLULayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<SigmoidLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<TanHLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<AbsLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<BNLLLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<PowerLayer>(LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<ConvolutionLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<DeconvolutionLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<SoftmaxLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<FullyConnectedLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<LRNLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<MVNLayer>(const LayerParams&);
 
-template Ptr<Layer> createLayerFromCaffe<CropLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<EltwiseLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<BatchNormLayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<ChannelsPReLULayer>(LayerParams&);
-template Ptr<Layer> createLayerFromCaffe<MaxUnpoolLayer>(LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<ConcatLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<SliceLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<SplitLayer>(const LayerParams&);
+
+template Ptr<Layer> createLayerFromCaffe<ReLULayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<SigmoidLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<TanhLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<AbsLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<BNLLLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<PowerLayer>(const LayerParams&);
+
+template Ptr<Layer> createLayerFromCaffe<CropLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<ElemwiseNAryLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<BatchNormLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<MaxUnpoolLayer>(const LayerParams&);
+template Ptr<Layer> createLayerFromCaffe<PermuteLayer>(const LayerParams& params);
 
 }
 }

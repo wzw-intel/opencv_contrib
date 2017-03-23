@@ -41,7 +41,6 @@
 
 #include "../precomp.hpp"
 #include "layers_common.hpp"
-#include "softmax_layer.hpp"
 #include <opencv2/core/ocl.hpp>
 #include "modules/dnn/opencl_kernels_dnn.hpp"
 #include <algorithm>
@@ -53,171 +52,118 @@ namespace cv
 namespace dnn
 {
 
-SoftMaxLayerImpl::SoftMaxLayerImpl(int axis)
+class SoftmaxLayerImpl : public SoftmaxLayer
 {
-    axisRaw = axis;
-}
+public:
+    int axis, channels;
+    Mat buf;
+    size_t outerSize, innerSize;
 
-void SoftMaxLayerImpl::allocate(const std::vector<Blob*> &inputs, std::vector<Blob> &outputs)
-{
-    CV_Assert(inputs.size() == 1);
-    axis = inputs[0]->canonicalAxis(axisRaw);
-
-    useOpenCL = ocl::useOpenCL();
-
-    BlobShape shape = inputs[0]->shape();
-    outerSize = shape.total(0, axis);
-    channels = shape[axis];
-    innerSize = shape.total(axis + 1);
-
-    int allocFlag = (useOpenCL) ? Blob::ALLOC_UMAT : Blob::ALLOC_MAT;
-    shape[axis] = 1;
-    buf.create(shape, inputs[0]->type(), allocFlag);
-
-    outputs.resize(1);
-    outputs[0].create(inputs[0]->shape(), inputs[0]->type(), allocFlag);
-}
-
-void SoftMaxLayerImpl::forward(std::vector<Blob*> &inputs, std::vector<Blob> &outputs)
-{
-    Blob &src = *inputs[0];
-    Blob &dst = outputs[0];
-
-    if (!useOpenCL)
-        forward_cpu(src, dst);
-    else
+    SoftmaxLayerImpl(int axis_ = 1) { axis = axis_; }
+    void allocate(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
     {
-        CV_Assert(forward_ocl(src, dst));
-    }
-}
+        CV_Assert(inputs.total() == (size_t)1);
+        Mat inp = inputs.getMat(0);
+        std::vector<int> shape;
+        inp.getShape(shape);
 
-#ifdef HAVE_OPENCL
-bool SoftMaxLayerImpl::forward_ocl(Blob &src, Blob &dst)
-{
-    const UMat &srcMat = src.umatRefConst();
-    UMat &dstMat = dst.umatRef();
-    srcMat.copyTo(dstMat);
-    UMat &bufMat = buf.umatRef();
-    CV_Assert(dstMat.offset == 0);
+        int i, dims = inp.dims;
+        outerSize = innerSize = 1;
+        for( i = 0; i < axis; i++ )
+            outerSize *= shape[i];
+        for( i = axis+1; i < dims; i++ )
+            innerSize *= shape[i];
+        channels = shape[axis];
 
-    String buildOpts = String("-DT=") + ocl::typeToStr(src.type());
-    ocl::Kernel kmax, ksub, ksum, kdiv;
-
-    if (!kmax.create("kernel_channel_max", ocl::dnn::softmax_oclsrc, buildOpts))
-        return false;
-
-    if (!ksub.create("kernel_channel_subtract", ocl::dnn::softmax_oclsrc, buildOpts))
-        return false;
-
-    if (!ksum.create("kernel_channel_sum", ocl::dnn::softmax_oclsrc, buildOpts))
-        return false;
-
-    if (!kdiv.create("kernel_channel_div", ocl::dnn::softmax_oclsrc, buildOpts))
-        return false;
-
-    size_t wgSize = ocl::Device::getDefault().maxWorkGroupSize();
-    size_t bufSize = buf.total();
-    size_t totalSize = src.total();
-
-    kmax.args((int)outerSize, (int)channels, (int)innerSize,
-              ocl::KernelArg::PtrReadOnly(dstMat), ocl::KernelArg::PtrReadWrite(bufMat));
-    if (!kmax.run(1, &bufSize, &wgSize, true))
-        return false;
-
-    ksub.args((int)totalSize, (int)outerSize, (int)channels, (int)innerSize,
-              ocl::KernelArg::PtrReadOnly(bufMat), ocl::KernelArg::PtrReadWrite(dstMat));
-    if (!ksub.run(1, &totalSize, &wgSize, true))
-        return false;
-
-    cv::exp(dstMat, dstMat);
-
-    ksum.args((int)outerSize, (int)channels, (int)innerSize,
-              ocl::KernelArg::PtrReadOnly(dstMat), ocl::KernelArg::PtrReadWrite(bufMat));
-    if (!ksum.run(1, &bufSize, &wgSize, true))
-        return false;
-
-    kdiv.args((int)totalSize, (int)outerSize, (int)channels, (int)innerSize,
-              ocl::KernelArg::PtrReadOnly(bufMat), ocl::KernelArg::PtrReadWrite(dstMat));
-    if (!kdiv.run(1, &totalSize, &wgSize, true))
-        return false;
-
-    return true;
-}
-#else
-bool SoftMaxLayerImpl::forward_ocl(Blob&, Blob&)
-{
-    return false;
-}
-#endif
-
-void SoftMaxLayerImpl::forward_cpu(Blob &src, Blob &dst)
-{
-    CV_Assert(src.type() == CV_32F);
-
-    float *srcPtr = src.ptrf();
-    float *dstPtr = dst.ptrf();
-    float *bufPtr = buf.ptrf();
-
-    size_t outerStep = src.total(axis);
-    size_t cnStep = src.total(axis + 1);
-
-    //compute max along axis
-    for (size_t outerDim = 0; outerDim < outerSize; outerDim++)
-    {
-        size_t srcOffset = outerDim * outerStep;
-        size_t bufOffset = outerDim * cnStep;
-
-        memcpy(bufPtr + bufOffset, srcPtr + srcOffset, innerSize * sizeof(float));
-
-        for (size_t cnDim = 1; cnDim < channels; cnDim++)
-        {
-            for (size_t i = 0; i < innerSize; i++)
-                bufPtr[bufOffset + i] = std::max(bufPtr[bufOffset + i], srcPtr[srcOffset + cnDim * cnStep + i]);
-        }
+        outputs.resizeVector(1);
+        outputs.create(dims, &shape[0], inp.type(), 0);
+        
+        shape[axis] = 1;
+        buf.create(dims, &shape[0], inp.type());
     }
 
-    //subtract max
-    for (size_t outerDim = 0; outerDim < outerSize; outerDim++)
+    void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
     {
-        size_t srcOffset = outerDim * outerStep;
-        size_t bufOffset = outerDim * cnStep;
+        Mat src = inputs.getMat(0);
+        Mat dst = outputs.getMat(0);
+        CV_Assert(src.type() == CV_32F);
 
-        for (size_t cnDim = 0; cnDim < channels; cnDim++)
+        float *srcPtr = src.ptr<float>();
+        float *dstPtr = dst.ptr<float>();
+        float *bufPtr = buf.ptr<float>();
+
+        CV_Assert(src.isContinuous() && buf.isContinuous());
+
+        size_t outerStep = src.total()/outerSize;
+        size_t cnStep = innerSize;
+
+        //compute max along axis
+        for (size_t outerDim = 0; outerDim < outerSize; outerDim++)
         {
+            size_t srcOffset = outerDim * outerStep;
+            size_t bufOffset = outerDim * cnStep;
+
+            memcpy(bufPtr + bufOffset, srcPtr + srcOffset, innerSize * sizeof(float));
+
+            for (int cnDim = 1; cnDim < channels; cnDim++)
+            {
+                for (size_t i = 0; i < innerSize; i++)
+                    bufPtr[bufOffset + i] = std::max(bufPtr[bufOffset + i], srcPtr[srcOffset + cnDim * cnStep + i]);
+            }
+        }
+
+        //subtract max
+        for (size_t outerDim = 0; outerDim < outerSize; outerDim++)
+        {
+            size_t srcOffset = outerDim * outerStep;
+            size_t bufOffset = outerDim * cnStep;
+
+            for (size_t cnDim = 0; cnDim < channels; cnDim++)
+            {
+                for (size_t i = 0; i < innerSize; i++)
+                    dstPtr[srcOffset + cnDim * cnStep + i] = srcPtr[srcOffset + cnDim * cnStep + i] - bufPtr[bufOffset + i];
+            }
+        }
+
+        cv::exp(dst, dst);
+
+        for (size_t outerDim = 0; outerDim < outerSize; outerDim++)
+        {
+            size_t srcOffset = outerDim * outerStep;
+            size_t bufOffset = outerDim * cnStep;
+
+            //sum exp along axis
             for (size_t i = 0; i < innerSize; i++)
-                dstPtr[srcOffset + cnDim * cnStep + i] = srcPtr[srcOffset + cnDim * cnStep + i] - bufPtr[bufOffset + i];
+                bufPtr[bufOffset + i] = 0.f;
+
+            for (size_t cnDim = 0; cnDim < channels; cnDim++)
+            {
+                for (size_t i = 0; i < innerSize; i++)
+                    bufPtr[bufOffset + i] += dstPtr[srcOffset + cnDim * cnStep + i];
+            }
+            
+            //divide by computed sum
+            for (size_t cnDim = 0; cnDim < channels; cnDim++)
+            {
+                for (size_t i = 0; i < innerSize; i++)
+                    dstPtr[srcOffset + cnDim * cnStep + i] /= bufPtr[bufOffset + i];
+            }
         }
     }
-
-    cv::exp(dst.matRef(), dst.matRef());
-
-    for (size_t outerDim = 0; outerDim < outerSize; outerDim++)
-    {
-        size_t srcOffset = outerDim * outerStep;
-        size_t bufOffset = outerDim * cnStep;
-
-        //sum exp along axis
-        for (size_t i = 0; i < innerSize; i++)
-            bufPtr[bufOffset + i] = 0.f;
-
-        for (size_t cnDim = 0; cnDim < channels; cnDim++)
-        {
-            for (size_t i = 0; i < innerSize; i++)
-                bufPtr[bufOffset + i] += dstPtr[srcOffset + cnDim * cnStep + i];
-        }
-
-        //divide by computed sum
-        for (size_t cnDim = 0; cnDim < channels; cnDim++)
-        {
-            for (size_t i = 0; i < innerSize; i++)
-                dstPtr[srcOffset + cnDim * cnStep + i] /= bufPtr[bufOffset + i];
-        }
-    }
-}
+};
 
 Ptr<SoftmaxLayer> SoftmaxLayer::create(int axis)
 {
-    return Ptr<SoftmaxLayer>(new SoftMaxLayerImpl(axis));
+    return Ptr<SoftmaxLayer>(new SoftmaxLayerImpl(axis));
+}
+
+Ptr<SoftmaxLayer> SoftmaxLayer::create(const LayerParams &params)
+{
+    int axis = params.get<int>("axis", 1);
+    Ptr<SoftmaxLayer> l(new SoftmaxLayerImpl(axis));
+
+    l->setParamsFrom(params);
+    return l;
 }
 
 }

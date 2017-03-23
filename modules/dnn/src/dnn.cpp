@@ -107,8 +107,8 @@ struct LayerData
     std::set<int> requiredOutputs;
 
     Ptr<Layer> layerInstance;
-    std::vector<Blob> outputBlobs;
-    std::vector<Blob*> inputBlobs;
+    std::vector<Mat> outputBlobs;
+    std::vector<Mat> inputBlobs;
 
     int flag;
 
@@ -130,8 +130,8 @@ struct LayerData
 //fake layer containing network input blobs
 struct DataLayer : public Layer
 {
-    void allocate(const std::vector<Blob*>&, std::vector<Blob>&) {}
-    void forward(std::vector<Blob*>&, std::vector<Blob>&) {}
+    void allocate(InputArrayOfArrays, OutputArrayOfArrays) {}
+    void forward(InputArrayOfArrays, OutputArrayOfArrays) {}
 
     int outputNameToIndex(String tgtName)
     {
@@ -363,20 +363,20 @@ struct Net::Impl
             LayerPin from = ld.inputBlobsId[i];
             CV_Assert(from.valid());
             CV_DbgAssert(layers.count(from.lid) && (int)layers[from.lid].outputBlobs.size() > from.oid);
-            ld.inputBlobs[i] = &layers[from.lid].outputBlobs[from.oid];
+            ld.inputBlobs[i] = layers[from.lid].outputBlobs[from.oid];
         }
 
         //allocate layer
         ld.outputBlobs.resize(std::max((size_t)1, ld.requiredOutputs.size())); //layer produce at least one output blob
-        try
+        //try
         {
             Ptr<Layer> layerPtr = ld.getLayerInstance();
             layerPtr->allocate(ld.inputBlobs, ld.outputBlobs);
         }
-        catch (const cv::Exception &err)
+        /*catch (const cv::Exception &err)
         {
             CV_RETHROW_ERROR(err, format("The following error occured while making allocate() for layer \"%s\": %s", ld.name.c_str(), err.err.c_str()));
-        }
+        }*/
 
         ld.flag = 1;
     }
@@ -414,14 +414,14 @@ struct Net::Impl
         }
 
         //forward itself
-        try
+        //try
         {
             ld.layerInstance->forward(ld.inputBlobs, ld.outputBlobs);
         }
-        catch (const cv::Exception &err)
+        /*catch (const cv::Exception &err)
         {
             CV_RETHROW_ERROR(err, format("The following error occured while making forward() for layer \"%s\": %s", ld.name.c_str(), err.err.c_str()));
-        }
+        }*/
 
         ld.flag = 1;
     }
@@ -509,18 +509,54 @@ void Net::setNetInputs(const std::vector<String> &inputBlobNames)
     impl->netInputLayer->setNames(inputBlobNames);
 }
 
-void Net::setBlob(String outputName, const Blob &blob)
+void Net::setBlob(String layerName, const Mat &blob)
 {
-    LayerPin pin = impl->getPinByAlias(outputName);
+    LayerPin pin = impl->getPinByAlias(layerName);
     if (!pin.valid())
-        CV_Error(Error::StsObjectNotFound, "Requested blob \"" + outputName + "\" not found");
+        CV_Error(Error::StsObjectNotFound, "Requested blob \"" + layerName + "\" not found");
 
     LayerData &ld = impl->layers[pin.lid];
     ld.outputBlobs.resize( std::max(pin.oid+1, (int)ld.requiredOutputs.size()) );
     ld.outputBlobs[pin.oid] = blob;
 }
 
-Blob Net::getBlob(String outputName)
+void Net::setImage(String layerName, const Mat &img0, bool swap_rb)
+{
+    int nchannels = img0.channels();
+    CV_Assert( img0.dims == 2 && (nchannels == 3 || nchannels == 4) );
+
+    LayerPin pin = impl->getPinByAlias(layerName);
+    if (!pin.valid())
+        CV_Error(Error::StsObjectNotFound, "Requested blob \"" + layerName + "\" not found");
+
+    LayerData &ld = impl->layers[pin.lid];
+    ld.outputBlobs.resize( std::max(pin.oid+1, (int)ld.requiredOutputs.size()) );
+    Mat& blob = ld.outputBlobs[pin.oid];
+
+    const int NCHANNELS = 3;
+    int sz[] = { NCHANNELS, img0.rows, img0.cols };
+    blob.create(3, sz, CV_8U);
+    Mat planes[NCHANNELS];
+
+    for( int i = 0; i < NCHANNELS; i++ )
+        planes[i] = Mat(img0.rows, img0.cols, CV_8U, blob.ptr(i));
+
+    // color images may be passed as BGR[A] images,
+    // whereas in the produced blob the red channel should always go first
+    // (since this is how the network is trained)
+    if( swap_rb )
+        std::swap(planes[0], planes[2]);
+
+    // this code should handle properly both 4-channel and 3-channel input images -
+    // we split the color image by channels and take the first 3 ones.
+    Mat planes_8u[4];
+    split(img0, planes_8u);
+
+    for( int i = 0; i < NCHANNELS; i++ )
+        planes_8u[i].convertTo(planes[i], CV_32F, 1./255);
+}
+
+Mat Net::getBlob(String outputName)
 {
     LayerPin pin = impl->getPinByAlias(outputName);
     if (!pin.valid())
@@ -535,20 +571,20 @@ Blob Net::getBlob(String outputName)
     return ld.outputBlobs[pin.oid];
 }
 
-Blob Net::getParam(LayerId layer, int numParam)
+Mat Net::getParam(LayerId layer, int numParam)
 {
     LayerData &ld = impl->getLayerData(layer);
 
-    std::vector<Blob> &layerBlobs = ld.layerInstance->blobs;
+    std::vector<Mat> &layerBlobs = ld.layerInstance->blobs;
     CV_Assert(numParam < (int)layerBlobs.size());
     return layerBlobs[numParam];
 }
 
-void Net::setParam(LayerId layer, int numParam, const Blob &blob)
+void Net::setParam(LayerId layer, int numParam, const Mat &blob)
 {
     LayerData &ld = impl->getLayerData(layer);
 
-    std::vector<Blob> &layerBlobs = ld.layerInstance->blobs;
+    std::vector<Mat> &layerBlobs = ld.layerInstance->blobs;
     CV_Assert(numParam < (int)layerBlobs.size());
     //we don't make strong checks, use this function carefully
     layerBlobs[numParam] = blob;
@@ -639,44 +675,9 @@ int Layer::outputNameToIndex(String)
     return -1;
 }
 
-template <typename T>
-static void vecToPVec(const std::vector<T> &v, std::vector<T*> &pv)
-{
-    pv.resize(v.size());
-    for (size_t i = 0; i < v.size(); i++)
-        pv[i] = const_cast<T*>(&v[i]);
-}
-
-void Layer::allocate(const std::vector<Blob> &inputs, std::vector<Blob> &outputs)
-{
-    std::vector<Blob*> inputsp;
-    vecToPVec(inputs, inputsp);
-    this->allocate(inputsp, outputs);
-}
-
-std::vector<Blob> Layer::allocate(const std::vector<Blob> &inputs)
-{
-    std::vector<Blob> outputs;
-    this->allocate(inputs, outputs);
-    return outputs;
-}
-
-void Layer::forward(const std::vector<Blob> &inputs, std::vector<Blob> &outputs)
-{
-    std::vector<Blob*> inputsp;
-    vecToPVec(inputs, inputsp);
-    this->forward(inputsp, outputs);
-}
-
-void Layer::run(const std::vector<Blob> &inputs, std::vector<Blob> &outputs)
-{
-    std::vector<Blob*> inputsp;
-    vecToPVec(inputs, inputsp);
-    this->allocate(inputsp, outputs);
-    this->forward(inputsp, outputs);
-}
-
 Layer::~Layer() {}
+
+int Layer::kind() const { return LAYER_GENERIC; }
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -710,7 +711,7 @@ void LayerFactory::unregisterLayer(const String &_type)
     impl()->erase(type);
 }
 
-Ptr<Layer> LayerFactory::createLayerInstance(const String &_type, LayerParams& params)
+Ptr<Layer> LayerFactory::createLayerInstance(const String &_type, const LayerParams& params)
 {
     String type = _type.toLowerCase();
     Impl::const_iterator it = LayerFactory::impl()->find(type);

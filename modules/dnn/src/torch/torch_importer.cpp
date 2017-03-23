@@ -91,13 +91,13 @@ static inline bool endsWith(const String &str, const char *substr)
 
 struct TorchImporter : public ::cv::dnn::Importer
 {
-    typedef std::map<String, std::pair<int, Blob> > TensorsMap;
+    typedef std::map<String, std::pair<int, Mat> > TensorsMap;
     Net net;
 
     THFile *file;
     std::set<int> readedIndexes;
     std::map<int, Mat> storages;
-    std::map<int, Blob> tensors;
+    std::map<int, Mat> tensors;
 
     struct Module
     {
@@ -197,7 +197,7 @@ struct TorchImporter : public ::cv::dnn::Importer
 
            if (typeStr == "Double")
                return CV_64F;
-           else if (typeStr == "Float")
+           else if (typeStr == "Float" || typeStr == "Cuda")
                return CV_32F;
            else if (typeStr == "Byte")
                return CV_8U;
@@ -343,9 +343,16 @@ struct TorchImporter : public ::cv::dnn::Importer
             std::cout << scalarParams;
 
             std::cout << "#" << tensorParams.size() << " tensorParams:\n";
-            std::map<String,std::pair<int, Blob> >::const_iterator it;
+            std::map<String,std::pair<int, Mat> >::const_iterator it;
+            std::vector<int> shape;
             for (it = tensorParams.begin(); it != tensorParams.end(); it++)
-                std::cout << it->first << ": Tensor " << it->second.second.shape() << "\n";
+            {
+                it->second.second.getShape(shape);
+                std::cout << it->first << ": Tensor (";
+                int i, n = (int)shape.size();
+                for( i = 0; i < n; i++ )
+                    std::cout << shape[i] << (i < n-1 ? " x " : ")\n");
+            }
         }
     }
 
@@ -364,7 +371,7 @@ struct TorchImporter : public ::cv::dnn::Importer
 
         if (typeidx == TYPE_NIL)
         {
-            tensors.insert(std::make_pair(indexTensor, Blob()));
+            tensors.insert(std::make_pair(indexTensor, Mat()));
             return;
         }
 
@@ -393,13 +400,13 @@ struct TorchImporter : public ::cv::dnn::Importer
             ssteps[i] = (size_t)steps[i] * CV_ELEM_SIZE(typeTensor);
         }
 
-        //allocate Blob
+        //allocate Mat
         Mat srcMat(ndims, (int*)isizes, typeTensor , storages[indexStorage].ptr() + offset*CV_ELEM_SIZE(typeTensor), (size_t*)ssteps);
         int dstType = CV_32F;
 
-        Blob blob;
-        blob.create(BlobShape(ndims, isizes), dstType);
-        srcMat.convertTo(blob.matRef(), dstType);
+        Mat blob;
+        blob.create(ndims, (int*)isizes, dstType);
+        srcMat.convertTo(blob, dstType);
 
         tensors.insert(std::make_pair(indexTensor, blob));
     }
@@ -522,7 +529,7 @@ struct TorchImporter : public ::cv::dnn::Importer
                 readTorchTable(scalarParams, tensorParams);
 
                 CV_Assert(tensorParams.count("weight"));
-                Blob weightBlob = tensorParams["weight"].second;
+                Mat weightBlob = tensorParams["weight"].second;
                 layerParams.blobs.push_back(weightBlob);
 
                 bool bias = tensorParams.count("bias") != 0;
@@ -530,7 +537,7 @@ struct TorchImporter : public ::cv::dnn::Importer
                     layerParams.blobs.push_back(tensorParams["bias"].second);
                 layerParams.set("bias_term", bias);
 
-                layerParams.set("num_output", weightBlob.size(0));
+                layerParams.set("num_output", weightBlob.size[0]);
                 curModule->modules.push_back(newModule);
             }
             else if (nnName == "Reshape")
@@ -576,8 +583,8 @@ struct TorchImporter : public ::cv::dnn::Importer
                 CV_Assert(scalarParams.has("eps"));
                 layerParams.set("eps", float(scalarParams.get<double>("eps")));
 
-                layerParams.blobs.push_back(Blob());
-                layerParams.blobs.push_back(Blob());
+                layerParams.blobs.push_back(Mat());
+                layerParams.blobs.push_back(Mat());
 
                 if (tensorParams.count("weight"))
                 {
@@ -605,11 +612,11 @@ struct TorchImporter : public ::cv::dnn::Importer
                     CV_Assert(tensorParams["weight"].second.total() == outputChannels);
                     layerParams.blobs.push_back(tensorParams["weight"].second);
 
-                    newModule->apiType = "ChannelsPReLU";
+                    newModule->apiType = "ReLU";
                 }
                 else {
                     CV_Assert(tensorParams["weight"].second.total() == 1);
-                    float negative_slope = *tensorParams["weight"].second.ptrf();
+                    float negative_slope = *tensorParams["weight"].second.ptr<float>();
                     layerParams.set("negative_slope", negative_slope);
 
                     newModule->apiType = "ReLU";
@@ -956,7 +963,7 @@ Ptr<Importer> createTorchImporter(const String &filename, bool isBinary)
 }
 
 
-Blob readTorchBlob(const String &filename, bool isBinary)
+Mat readTorchBlob(const String &filename, bool isBinary)
 {
     Ptr<TorchImporter> importer(new TorchImporter(filename, isBinary));
     importer->readObject();

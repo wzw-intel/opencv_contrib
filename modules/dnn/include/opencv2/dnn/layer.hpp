@@ -59,7 +59,7 @@ class CV_EXPORTS LayerFactory
 public:
 
     //! Each Layer class must provide this function to the factory
-    typedef Ptr<Layer>(*Constuctor)(LayerParams &params);
+    typedef Ptr<Layer>(*Constuctor)(const LayerParams &params);
 
     //! Registers the layer class with typename @p type and specified @p constructor.
     static void registerLayer(const String &type, Constuctor constructor);
@@ -71,7 +71,7 @@ public:
      *  @param type type name of creating layer.
      *  @param params parameters which will be used for layer initialization.
      */
-    static Ptr<Layer> createLayerInstance(const String &type, LayerParams& params);
+    static Ptr<Layer> createLayerInstance(const String &type, const LayerParams& params);
 
 private:
     LayerFactory();
@@ -120,7 +120,7 @@ static _LayerStaticRegisterer __LayerStaticRegisterer_##type(#type, __LayerStati
 
 
 template<typename LayerClass>
-Ptr<Layer> _layerDynamicRegisterer(LayerParams &params)
+Ptr<Layer> _layerDynamicRegisterer(const LayerParams &params)
 {
     return Ptr<Layer>(new LayerClass(params));
 }

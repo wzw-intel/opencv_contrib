@@ -45,7 +45,6 @@
 #include <vector>
 #include <opencv2/core.hpp>
 #include <opencv2/dnn/dict.hpp>
-#include <opencv2/dnn/blob.hpp>
 
 namespace cv
 {
@@ -70,10 +69,36 @@ namespace dnn //! This namespace is used for dnn module functionlaity.
     {
     public:
         //TODO: Add ability to name blob params
-        std::vector<Blob> blobs; //!< List of learned parameters stored as blobs.
+        std::vector<Mat> blobs; //!< List of learned parameters stored as blobs.
 
         String name; //!< Name of the layer instance (optional, can be used internal purposes).
         String type; //!< Type name which was used for creating layer by layer factory (optional).
+
+        template<typename T>
+        T getParameter(const std::string& parameterName,
+              size_t idx=0, const bool required=true,
+              const T& defaultValue=T()) const
+        {
+            DictValue dictValue;
+            if (!has(parameterName))
+            {
+                if(required)
+                {
+                    std::string message = name;
+                    message += " layer parameter does not contain ";
+                    message += parameterName;
+                    message += " parameter.";
+                    CV_Error(Error::StsBadArg, message);
+                }
+                else
+                {
+                    return defaultValue;
+                }
+            }
+
+            dictValue = get(parameterName);
+            return dictValue.get<T>(idx);
+        }
     };
 
     /** @brief This interface class allows to build new Layers - are building blocks of networks.
@@ -86,7 +111,7 @@ namespace dnn //! This namespace is used for dnn module functionlaity.
     public:
 
         //! List of learned parameters must be stored here to allow read them by using Net::getParam().
-        CV_PROP_RW std::vector<Blob> blobs;
+        CV_PROP_RW std::vector<Mat> blobs;
 
         /** @brief Allocates internal buffers and output blobs with respect to the shape of inputs.
          *  @param[in]  input  vector of already allocated input blobs
@@ -96,25 +121,16 @@ namespace dnn //! This namespace is used for dnn module functionlaity.
          * If this method is called first time then @p output vector consists from empty blobs and its size determined by number of output connections.
          * This method can be called multiple times if size of any @p input blob was changed.
          */
-        virtual void allocate(const std::vector<Blob*> &input, std::vector<Blob> &output) = 0;
+        virtual void allocate(InputArrayOfArrays inputs, OutputArrayOfArrays outputs) = 0;
 
         /** @brief Given the @p input blobs, computes the output @p blobs.
          *  @param[in]  input  the input blobs.
          *  @param[out] output allocated output blobs, which will store results of the computation.
          */
-        virtual void forward(std::vector<Blob*> &input, std::vector<Blob> &output) = 0;
-
-        /** @brief @overload */
-        CV_WRAP void allocate(const std::vector<Blob> &inputs, CV_OUT std::vector<Blob> &outputs);
-
-        /** @brief @overload */
-        CV_WRAP std::vector<Blob> allocate(const std::vector<Blob> &inputs);
-
-        /** @brief @overload */
-        CV_WRAP void forward(const std::vector<Blob> &inputs, CV_IN_OUT std::vector<Blob> &outputs);
+        virtual void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs) = 0;
 
         /** @brief Allocates layer and computes output. */
-        CV_WRAP void run(const std::vector<Blob> &inputs, CV_OUT std::vector<Blob> &outputs);
+        //virtual void run(InputArrayOfArrays inputs, OutputArrayOfArrays outputs);
 
         /** @brief Returns index of input blob into the input array.
          *  @param inputName label of input blob
@@ -127,6 +143,10 @@ namespace dnn //! This namespace is used for dnn module functionlaity.
          *  @see inputNameToIndex()
          */
         virtual int outputNameToIndex(String outputName);
+
+        enum { LAYER_GENERIC=0, LAYER_CONV=1, LAYER_ELEMWISE=2, LAYER_INPUT=32, LAYER_OUTPUT=64 };
+
+        virtual int kind() const;
 
         CV_PROP String name; //!< Name of the layer instance, can be used for logging or other internal purposes.
         CV_PROP String type; //!< Type name which was used for creating layer by layer factory.
@@ -238,20 +258,30 @@ namespace dnn //! This namespace is used for dnn module functionlaity.
         /** @overload */
         void forwardOpt(const std::vector<LayerId> &toLayers);
 
-        /** @brief Sets the new value for the layer output blob
-         *  @param outputName descriptor of the updating layer output blob.
-         *  @param blob new blob.
+        /** @brief Sets the new value for the specified layer
+         *  @param layerName name of the layer, typically the input layer
+         *  @param blob new blob, 3-dimensional 1-channel 32f array.
          *  @see connect(String, String) to know format of the descriptor.
-         *  @note If updating blob is not empty then @p blob must have the same shape,
+         *  @note All the blobs set must have the same shape,
          *  because network reshaping is not implemented yet.
          */
-        CV_WRAP void setBlob(String outputName, const Blob &blob);
+        CV_WRAP void setBlob(String layerName, const Mat &blob);
+
+        /** @brief Sets the new value for the specified layer
+         *  @param layerName name of the layer, typically the input layer
+         *  @param image the new image. It's supposed to have 3 channels (B-G-R),
+         *      8u (0..255 value range, scaled to 0..1) or 32f (0..1 value range).
+         *  @see connect(String, String) to know format of the descriptor.
+         *  @note All the images set must have the same shape,
+         *  because network reshaping is not implemented yet.
+         */
+        CV_WRAP void setImage(String layerName, const Mat &image, bool swap_rb);
 
         /** @brief Returns the layer output blob.
          *  @param outputName the descriptor of the returning layer output blob.
          *  @see connect(String, String)
          */
-        CV_WRAP Blob getBlob(String outputName);
+        CV_WRAP Mat getBlob(String outputName);
 
         /** @brief Sets the new value for the learned param of the layer.
          *  @param layer name or id of the layer.
@@ -261,14 +291,14 @@ namespace dnn //! This namespace is used for dnn module functionlaity.
          *  @note If shape of the new blob differs from the previous shape,
          *  then the following forward pass may fail.
         */
-        CV_WRAP void setParam(LayerId layer, int numParam, const Blob &blob);
+        CV_WRAP void setParam(LayerId layer, int numParam, const Mat &blob);
 
         /** @brief Returns parameter blob of the layer.
          *  @param layer name or id of the layer.
          *  @param numParam index of the layer parameter in the Layer::blobs array.
          *  @see Layer::blobs
          */
-        CV_WRAP Blob getParam(LayerId layer, int numParam = 0);
+        CV_WRAP Mat getParam(LayerId layer, int numParam = 0);
 
         /** @brief Returns indexes of layers with unconnected outputs.
          */
@@ -338,7 +368,7 @@ namespace dnn //! This namespace is used for dnn module functionlaity.
     /** @brief Loads blob which was serialized as torch.Tensor object of Torch7 framework.
      *  @warning This function has the same limitations as createTorchImporter().
      */
-    CV_EXPORTS_W Blob readTorchBlob(const String &filename, bool isBinary = true);
+    CV_EXPORTS_W Mat readTorchBlob(const String &filename, bool isBinary = true);
 
 //! @}
 }

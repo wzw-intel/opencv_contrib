@@ -41,17 +41,6 @@
 
 #include "precomp.hpp"
 #include "caffe/layer_loaders.hpp"
-#include "layers/blank_layer.hpp"
-
-#include "layers/crop_layer.hpp"
-#include "layers/eltwise_layer.hpp"
-#include "layers/flatten_layer.hpp"
-#include "layers/permute_layer.hpp"
-#include "layers/prior_box_layer.hpp"
-#include "layers/detection_output_layer.hpp"
-#include "layers/normalize_bbox_layer.hpp"
-#include "layers/shift_layer.hpp"
-#include "layers/padding_layer.hpp"
 
 namespace cv
 {
@@ -79,36 +68,35 @@ void initModule()
     REG_RUNTIME_LAYER_FUNC(Split,           createLayerFromCaffe<SplitLayer>);
     REG_RUNTIME_LAYER_FUNC(Concat,          createLayerFromCaffe<ConcatLayer>);
     REG_RUNTIME_LAYER_FUNC(Reshape,         createLayerFromCaffe<ReshapeLayer>);
-    REG_RUNTIME_LAYER_CLASS(Flatten,        FlattenLayer);
+    REG_RUNTIME_LAYER_FUNC(Flatten,         createLayerFromCaffe<FlattenLayer>);
 
     REG_RUNTIME_LAYER_FUNC(Convolution,     createLayerFromCaffe<ConvolutionLayer>);
     REG_RUNTIME_LAYER_FUNC(Deconvolution,   createLayerFromCaffe<DeconvolutionLayer>);
     REG_RUNTIME_LAYER_FUNC(Pooling,         createLayerFromCaffe<PoolingLayer>);
     REG_RUNTIME_LAYER_FUNC(LRN,             createLayerFromCaffe<LRNLayer>);
-    REG_RUNTIME_LAYER_FUNC(InnerProduct,    createLayerFromCaffe<InnerProductLayer>);
+    REG_RUNTIME_LAYER_FUNC(FullyConnected,  createLayerFromCaffe<FullyConnectedLayer>);
     REG_RUNTIME_LAYER_FUNC(Softmax,         createLayerFromCaffe<SoftmaxLayer>);
     REG_RUNTIME_LAYER_FUNC(MVN,             createLayerFromCaffe<MVNLayer>);
 
     REG_RUNTIME_LAYER_FUNC(ReLU,            createLayerFromCaffe<ReLULayer>);
-    REG_RUNTIME_LAYER_FUNC(ChannelsPReLU,   createLayerFromCaffe<ChannelsPReLULayer>);
     REG_RUNTIME_LAYER_FUNC(Sigmoid,         createLayerFromCaffe<SigmoidLayer>);
-    REG_RUNTIME_LAYER_FUNC(TanH,            createLayerFromCaffe<TanHLayer>);
+    REG_RUNTIME_LAYER_FUNC(Tanh,            createLayerFromCaffe<TanhLayer>);
     REG_RUNTIME_LAYER_FUNC(BNLL,            createLayerFromCaffe<BNLLLayer>);
     REG_RUNTIME_LAYER_FUNC(AbsVal,          createLayerFromCaffe<AbsLayer>);
     REG_RUNTIME_LAYER_FUNC(Power,           createLayerFromCaffe<PowerLayer>);
     REG_RUNTIME_LAYER_FUNC(BatchNorm,       createLayerFromCaffe<BatchNormLayer>);
     REG_RUNTIME_LAYER_FUNC(MaxUnpool,       createLayerFromCaffe<MaxUnpoolLayer>);
-    REG_RUNTIME_LAYER_CLASS(Dropout,        BlankLayer);
-    REG_RUNTIME_LAYER_CLASS(Identity,       BlankLayer);
+    REG_RUNTIME_LAYER_FUNC(Dropout,         createLayerFromCaffe<BlankLayer>);
+    REG_RUNTIME_LAYER_FUNC(Identity,        createLayerFromCaffe<BlankLayer>);
 
     REG_RUNTIME_LAYER_FUNC(Crop,            createLayerFromCaffe<CropLayer>);
-    REG_RUNTIME_LAYER_FUNC(Eltwise,         createLayerFromCaffe<EltwiseLayer>);
-    REG_RUNTIME_LAYER_CLASS(Permute,        PermuteLayer);
-    REG_RUNTIME_LAYER_CLASS(PriorBox,       PriorBoxLayer);
-    REG_RUNTIME_LAYER_CLASS(DetectionOutput, DetectionOutputLayer);
-    REG_RUNTIME_LAYER_CLASS(NormalizeBBox,  NormalizeBBoxLayer);
-    REG_RUNTIME_LAYER_CLASS(Shift,          ShiftLayer);
-    REG_RUNTIME_LAYER_CLASS(Padding,        PaddingLayer);
+    REG_RUNTIME_LAYER_FUNC(ElemwiseNAry,    createLayerFromCaffe<ElemwiseNAryLayer>);
+    REG_RUNTIME_LAYER_FUNC(Permute,         createLayerFromCaffe<PermuteLayer>);
+    REG_RUNTIME_LAYER_FUNC(PriorBox,        createLayerFromCaffe<PriorBoxLayer>);
+    REG_RUNTIME_LAYER_FUNC(DetectionOutput, createLayerFromCaffe<DetectionOutputLayer>);
+    REG_RUNTIME_LAYER_FUNC(NormalizeBBox,   createLayerFromCaffe<NormalizeBBoxLayer>);
+    REG_RUNTIME_LAYER_FUNC(Shift,           createLayerFromCaffe<ShiftLayer>);
+    REG_RUNTIME_LAYER_FUNC(Padding,         createLayerFromCaffe<PaddingLayer>);
 
     init.status = true;
 }

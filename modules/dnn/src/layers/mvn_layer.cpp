@@ -41,7 +41,6 @@
 
 #include "../precomp.hpp"
 #include "layers_common.hpp"
-#include "mvn_layer.hpp"
 #include <opencv2/dnn/shape_utils.hpp>
 
 namespace cv
@@ -49,52 +48,65 @@ namespace cv
 namespace dnn
 {
 
-MVNLayerImpl::MVNLayerImpl(bool normVariance_, bool acrossChannels_, double eps_)
+class MVNLayerImpl : public MVNLayer
 {
-    normVariance = normVariance_;
-    acrossChannels = acrossChannels_;
-    eps = eps_;
-}
-
-void MVNLayerImpl::allocate(const std::vector<Blob *> &inputs, std::vector<Blob> &outputs)
-{
-    outputs.resize(inputs.size());
-    for (size_t i = 0; i < inputs.size(); i++)
+public:
+    MVNLayerImpl(bool normVariance_ = true, bool acrossChannels_ = false, float eps_ = 1e-9)
     {
-        CV_Assert(!acrossChannels || inputs[i]->dims() >= 2);
-        outputs[i].create(inputs[i]->shape(), inputs[i]->type());
+        normVariance = normVariance_;
+        acrossChannels = acrossChannels_;
+        eps = eps_;
     }
-}
 
-void MVNLayerImpl::forward(std::vector<Blob *> &inputs, std::vector<Blob> &outputs)
-{
-    for (size_t inpIdx = 0; inpIdx < inputs.size(); inpIdx++)
+    void allocate(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
     {
-        Blob &inpBlob = *inputs[inpIdx];
-        Blob &outBlob = outputs[inpIdx];
+        CV_Assert(inputs.total() == 1);
+        outputs.resizeVector(1);
+        Mat inp = inputs.getMat(0);
+        CV_Assert(!acrossChannels || inp.dims >= 2);
+        outputs.create(inp.dims, inp.size.p, inp.type(), 1);
+    }
 
-        int splitDim = (acrossChannels) ? 1 : 2;
-        Shape workSize((int)inpBlob.total(0, splitDim), (int)inpBlob.total(splitDim));
-        Mat inpMat = reshaped(inpBlob.matRefConst(), workSize);
-        Mat outMat = reshaped(outBlob.matRef(), workSize);
+    void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+    {
+        CV_Assert(inputs.total() == 1);
+        Mat inpMat_ = inputs.getMat(0);
+        Mat outMat_ = outputs.getMat(0);
+        size_t total = inpMat_.total();
+        int rows = acrossChannels ? 1 : inpMat_.size[0];
+        int cols = (int)(total/rows);
+        CV_Assert((size_t)rows*cols == total);
+        int sz[] = { rows, cols };
+        Mat inpMat = inpMat_.reshape(1, 2, sz);
+        Mat outMat = outMat_.reshape(1, 2, sz);
 
-        Scalar mean, dev;
-        for (int i = 0; i < workSize[0]; i++)
+        for (int i = 0; i < rows; i++)
         {
+            Scalar mean, dev;
             Mat inpRow = inpMat.row(i);
             Mat outRow = outMat.row(i);
-
-            cv::meanStdDev(inpRow, mean, (normVariance) ? dev : noArray());
-            double alpha = (normVariance) ? 1/(eps + dev[0]) : 1;
+            meanStdDev(inpRow, mean, normVariance ? dev : noArray());
+            double alpha = normVariance ? 1/(eps + dev[0]) : 1;
             inpRow.convertTo(outRow, outRow.type(), alpha, -mean[0] * alpha);
         }
     }
-}
+};
 
-
-Ptr<MVNLayer> MVNLayer::create(bool normVariance, bool acrossChannels, double eps)
+Ptr<MVNLayer> MVNLayer::create(bool normVariance, bool acrossChannels, float eps)
 {
     return Ptr<MVNLayer>(new MVNLayerImpl(normVariance, acrossChannels, eps));
+}
+
+Ptr<MVNLayer> MVNLayer::create(const LayerParams& params)
+{
+    bool normVariance = params.get<bool>("normalize_variance", true);
+    bool acrossChannels = params.get<bool>("across_channels", false);
+    float eps = (float)params.get<double>("eps", 1e-9);
+
+    Ptr<MVNLayer> l(new MVNLayerImpl(normVariance, acrossChannels, eps));
+    l->setParamsFrom(params);
+
+    return l;
 }
 
 }

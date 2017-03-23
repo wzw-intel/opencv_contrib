@@ -41,7 +41,6 @@
 
 #include "../precomp.hpp"
 #include "layers_common.hpp"
-#include "flatten_layer.hpp"
 #include <float.h>
 #include <algorithm>
 
@@ -50,68 +49,73 @@ namespace cv
 namespace dnn
 {
 
-FlattenLayer::FlattenLayer(LayerParams &params) : Layer(params)
+class FlattenLayerImpl : public FlattenLayer
 {
-    _startAxis = params.get<int>("axis", 1);
-    _endAxis = params.get<int>("end_axis", -1);
-}
+public:
+    int numAxes;
+    std::vector<int> resultShape;
 
-void FlattenLayer::checkInputs(const std::vector<Blob*> &inputs)
-{
-    CV_Assert(inputs.size() > 0);
-    for (size_t i = 1; i < inputs.size(); i++)
+    FlattenLayerImpl(int startAxis_, int endAxis_)
     {
-        for (size_t j = 0; j < _numAxes; j++)
+        startAxis = startAxis_;
+        endAxis = endAxis_;
+    }
+    void allocate(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+    {
+        CV_Assert(inputs.total() == 1);
+        Mat inp = inputs.getMat(0);
+        numAxes = inp.dims;
+        CV_Assert(startAxis >= 0);
+        CV_Assert(endAxis >= startAxis && endAxis < numAxes);
+
+        size_t flattenedDimensionSize = 1;
+        int i;
+        for (i = startAxis; i <= endAxis; i++)
         {
-            CV_Assert(inputs[i]->shape()[j] == inputs[0]->shape()[j]);
+            flattenedDimensionSize *= inp.size[i];
+        }
+
+        CV_Assert(flattenedDimensionSize == (size_t)(int)flattenedDimensionSize);
+
+        resultShape.clear();
+        for (i = 0; i < startAxis; i++)
+            resultShape.push_back(inp.size[i]);
+
+        resultShape.push_back((int)flattenedDimensionSize);
+        for (i = endAxis + 1; i < numAxes; i++)
+            resultShape.push_back(inp.size[i]);
+
+        outputs.resizeVector(1);
+    }
+
+    void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+    {
+        size_t i, ninputs = inputs.total();
+        std::vector<Mat>& outp = outputs.getMatVecRef();
+        for (i = 0; i < ninputs; i++)
+        {
+            Mat inp = inputs.getMat(i);
+            int newdims = (int)resultShape.size();
+            outp[i] = inp.reshape(1, newdims, &resultShape[0]);
         }
     }
-}
+};
 
-void FlattenLayer::allocate(const std::vector<Blob*> &inputs, std::vector<Blob> &outputs)
+Ptr<FlattenLayer> FlattenLayer::create(const LayerParams& params)
 {
-    checkInputs(inputs);
+    int startAxis = params.get<int>("axis", 1);
+    int endAxis = params.get<int>("end_axis", -1);
 
-    _numAxes = inputs[0]->dims();
-    _endAxis = inputs[0]->canonicalAxis(_endAxis);
-    CV_Assert(_startAxis >= 0);
-    CV_Assert(_endAxis >= _startAxis && _endAxis < (int)_numAxes);
-
-    size_t flattenedDimensionSize = 1;
-    for (int i = _startAxis; i <= _endAxis; i++)
-    {
-        flattenedDimensionSize *= inputs[0]->size(i);
-    }
-
-    std::vector<int> outputShapeVec;
-    for (int i = 0; i < _startAxis; i++)
-    {
-        outputShapeVec.push_back(inputs[0]->size(i));
-    }
-    outputShapeVec.push_back(flattenedDimensionSize);
-    for (size_t i = _endAxis + 1; i < _numAxes; i++)
-    {
-        outputShapeVec.push_back(inputs[0]->size(i));
-    }
-    CV_Assert(outputShapeVec.size() <= 4);
-
-    resultShape = BlobShape(outputShapeVec);
-
-    for (size_t i = 0; i < inputs.size(); i++)
-    {
-        //in-place
-        outputs[i].shareFrom(*inputs[i]);
-        outputs[i].reshape(resultShape);
-    }
+    Ptr<FlattenLayer> layer(new FlattenLayerImpl(startAxis, endAxis));
+    layer->setParamsFrom(params);
+    return layer;
 }
 
-void FlattenLayer::forward(std::vector<Blob*> &inputs, std::vector<Blob> &outputs)
+Ptr<FlattenLayer> FlattenLayer::create(int startAxis, int endAxis)
 {
-    for (size_t j = 0; j < inputs.size(); j++)
-    {
-        outputs[j].shareFrom(*inputs[j]);
-        outputs[j].reshape(resultShape);
-    }
+    return Ptr<FlattenLayer>(new FlattenLayerImpl(startAxis, endAxis));
+}
+
 }
 }
-}
+

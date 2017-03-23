@@ -8,61 +8,79 @@
 /*
 Implementation of Batch Normalization layer.
 */
-
-#include "max_unpooling_layer.hpp"
+#include "../precomp.hpp"
 
 namespace cv
 {
 namespace dnn
 {
 
-MaxUnpoolLayerImpl::MaxUnpoolLayerImpl(Size outSize_):
-    outSize(outSize_)
-{}
-
-void MaxUnpoolLayerImpl::allocate(const std::vector<Blob*> &inputs, std::vector<Blob> &outputs)
+class MaxUnpoolLayerImpl : public MaxUnpoolLayer
 {
-    CV_Assert(inputs.size() == 2);
-
-    BlobShape outShape = inputs[0]->shape();
-    outShape[2] = outSize.height;
-    outShape[3] = outSize.width;
-
-    outputs.resize(1);
-    outputs[0].create(outShape);
-}
-
-void MaxUnpoolLayerImpl::forward(std::vector<Blob*> &inputs, std::vector<Blob> &outputs)
-{
-    CV_Assert(inputs.size() == 2);
-    Blob& input = *inputs[0];
-    Blob& indices = *inputs[1];
-
-    CV_Assert(input.total() == indices.total());
-    CV_Assert(input.num() == 1);
-
-    for(int i_n = 0; i_n < outputs.size(); i_n++)
+public:
+    MaxUnpoolLayerImpl(Size outSize_)
     {
-        Blob& outBlob = outputs[i_n];
-        CV_Assert(input.channels() == outBlob.channels());
+        outSize = outSize_;
+    }
 
-        for (int i_c = 0; i_c < input.channels(); i_c++)
+    void allocate(InputArrayOfArrays inputs, OutputArrayOfArrays outputs){
+        CV_Assert(inputs.total() == 2);
+        Mat inp0 = inputs.getMat(0);
+        CV_Assert(inp0.dims == 3);
+
+        int sz[] = { inp0.size[0], outSize.height, outSize.width };
+        outputs.resizeVector(1);
+        outputs.create(3, sz, inp0.type(), 0);
+    }
+
+    void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+    {
+        CV_Assert(inputs.total() == 2);
+        Mat input = inputs.getMat(0);
+        Mat indices = inputs.getMat(1);
+        Mat output = outputs.getMat(0);
+        CV_Assert(input.total() == indices.total());
+        CV_Assert(input.size[0] == output.size[0]);
+        int channels = input.size[0];
+
+        for( int i_c = 0; i_c < channels; i_c++ )
         {
-            Mat outPlane = outBlob.getPlane(0, i_c);
-            for(int i_wh = 0; i_wh < input.size2().area(); i_wh++)
-            {
-                int index = indices.getPlane(0, i_c).at<float>(i_wh);
+            Mat inPlane = input.plane(0, i_c);
+            Mat idxPlane = indices.plane(0, i_c);
+            Mat outPlane = output.plane(0, i_c);
+            outPlane.setTo(0.);
 
-                CV_Assert(index < outPlane.total());
-                outPlane.at<float>(index) = input.getPlane(0, i_c).at<float>(i_wh);
+            CV_Assert(inPlane.isContinuous() && idxPlane.isContinuous() && outPlane.isContinuous());
+
+            size_t i, area = inPlane.total();
+            const float* inptr = inPlane.ptr<float>();
+            const float* idxptr = idxPlane.ptr<float>();
+            float* outptr = outPlane.ptr<float>();
+
+            for( i = 0; i < area; i++ )
+            {
+                int index = cvRound(idxptr[i]);
+                CV_Assert(0 <= index && index < (int)area);
+                outptr[index] = inptr[i];
             }
         }
     }
-}
+
+    Size outSize;
+};
 
 Ptr<MaxUnpoolLayer> MaxUnpoolLayer::create(Size unpoolSize)
 {
     return Ptr<MaxUnpoolLayer>(new MaxUnpoolLayerImpl(unpoolSize));
+}
+
+Ptr<MaxUnpoolLayer> MaxUnpoolLayer::create(const LayerParams& params)
+{
+    Size outSize(params.get<int>("out_w"),
+                 params.get<int>("out_h"));
+    Ptr<MaxUnpoolLayer> l(new MaxUnpoolLayerImpl(outSize));
+    l->setParamsFrom(params);
+    return l;
 }
 
 }

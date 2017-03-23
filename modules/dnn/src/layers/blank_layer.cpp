@@ -39,33 +39,43 @@
 //
 //M*/
 
-#ifndef __OPENCV_DNN_LAYERS_FULLY_CONNECTED_LAYER_HPP__
-#define __OPENCV_DNN_LAYERS_FULLY_CONNECTED_LAYER_HPP__
 #include "../precomp.hpp"
-#include <opencv2/dnn/all_layers.hpp>
 
 namespace cv
 {
 namespace dnn
 {
 
-class FullyConnectedLayerImpl : public InnerProductLayer
+class BlankLayerImpl : public BlankLayer
 {
-    int axisCan, dtype;
-    int numOutput, innerSize, outerSize;
-    bool bias, useOpenCL;
-    Blob biasOnesBlob;
-
-    template<typename XMat>
-    void forward_(std::vector<Blob*> &input, std::vector<Blob> &output);
-
 public:
+    BlankLayerImpl() {}
 
-    FullyConnectedLayerImpl(int axisCan = 1);
-    void allocate(const std::vector<Blob*> &input, std::vector<Blob> &output);
-    void forward(std::vector<Blob*> &inputs, std::vector<Blob> &outputs);
+    void allocate(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+    {
+        CV_Assert(inputs.total() == 1);
+        CV_Assert(inputs.kind() == _InputArray::STD_VECTOR_MAT &&
+                  outputs.kind() == _InputArray::STD_VECTOR_MAT);
+        outputs.resizeVector(1);
+    }
+
+    void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+    {
+        Mat inp = inputs.getMat(0);
+        Mat& outp = outputs.getMatRef(0);
+        outp = inp;
+    }
 };
 
+Ptr<BlankLayer> BlankLayer::create()
+{
+    return Ptr<BlankLayer>(new BlankLayerImpl);
+}
+
+Ptr<BlankLayer> BlankLayer::create(const LayerParams&)
+{
+    return Ptr<BlankLayer>(new BlankLayerImpl);
+}
+
 }
 }
-#endif

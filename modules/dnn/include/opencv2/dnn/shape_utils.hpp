@@ -39,6 +39,8 @@
 //
 //M*/
 
+#if 0
+
 #ifndef __OPENCV_DNN_DNN_SHAPE_UTILS_HPP__
 #define __OPENCV_DNN_DNN_SHAPE_UTILS_HPP__
 
@@ -128,10 +130,11 @@ Mat slice(const Mat &m, const _Range &r0, const _Range &r1, const _Range &r2, co
     ranges[2] = r2;
     ranges[3] = r3;
     return m(&ranges[0]);
-}
-
-BlobShape computeShapeByReshapeMask(const BlobShape &srcShape, const BlobShape &maskShape, Range srcRange = Range::all());
+}    
 
 }
 }
 #endif
+
+#endif
+

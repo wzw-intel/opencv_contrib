@@ -41,7 +41,6 @@
 
 #include "../precomp.hpp"
 #include "layers_common.hpp"
-#include "reshape_layer.hpp"
 #include <opencv2/dnn/shape_utils.hpp>
 
 namespace cv
@@ -49,75 +48,172 @@ namespace cv
 namespace dnn
 {
 
-ReshapeLayerImpl::ReshapeLayerImpl(const BlobShape &newShape_, Range applyingRange_, bool enableReordering_) :
-    enableReordering(enableReordering_)
+static size_t shapeTotal(const std::vector<int>& shape)
 {
-    newShapeDesc = newShape_;
-    newShapeRange = applyingRange_;
+    size_t i, dims = shape.size(), p = 1;
+    for( i = 0; i < dims; i++ ) p *= shape[i];
+
+    return p;
 }
 
-void ReshapeLayerImpl::allocate(const std::vector<Blob*> &inputs, std::vector<Blob> &outputs)
+static void computeShapeByReshapeMask(const std::vector<int> &srcShape,
+                                      const std::vector<int> &maskShape,
+                                      Range srcRange,
+                                      std::vector<int>& dstShape)
 {
-    outputs.resize(inputs.size());
-    outShapes.resize(inputs.size());
+    int srcDims = (int)srcShape.size();
+    int maskDims = (int)maskShape.size();
+    if (srcRange == Range::all())
+        srcRange = Range(0, srcDims);
+    else
+        srcRange.end = srcRange.end == INT_MAX ? srcDims : srcRange.end;
 
-    for (size_t i = 0; i < inputs.size(); i++)
+    CV_Assert(0 <= srcRange.start && srcRange.start <= srcRange.end && srcRange.end <= srcDims);
+    dstShape.assign(srcDims - srcRange.size() + maskDims, 0);
+
+    std::copy(srcShape.begin(), srcShape.begin() + srcRange.start, dstShape.begin());
+    std::copy(srcShape.begin() + srcRange.end, srcShape.begin() + srcDims,
+              dstShape.begin() + srcRange.start + maskDims);
+
+    int inferDim = -1;
+    for (int i = 0; i < maskDims; i++)
     {
-        outShapes[i] = computeShapeByReshapeMask(inputs[i]->shape(), newShapeDesc, newShapeRange);
-        outputs[i].shareFrom(*inputs[i]);
-        outputs[i].reshape(outShapes[i]);
+        if (maskShape[i] > 0)
+        {
+            dstShape[srcRange.start + i] = maskShape[i];
+        }
+        else if (maskShape[i] == 0)
+        {
+            if (srcRange.start + i >= srcDims)
+                CV_Error(Error::StsBadArg, format("Copy dim[%d] (which has zero size) is out of the source shape bounds", srcRange.start + i));
+            dstShape[srcRange.start + i] = srcShape[srcRange.start + i];
+        }
+        else if (maskShape[i] == -1)
+        {
+            if (inferDim != -1)
+                CV_Error(Error::StsAssert, "Duplicate of inferred dim (which is denoted by -1)");
+            inferDim = srcRange.start + i;
+            dstShape[inferDim] = 1;
+        }
+        else
+            CV_Error(Error::StsBadArg, "maskShape[i] >= -1");
+    }
+
+    size_t srcTotal = shapeTotal(srcShape);
+    size_t dstTotal = shapeTotal(dstShape);
+
+    if (inferDim != -1)
+    {
+        if (srcTotal % dstTotal != 0)
+            CV_Error(Error::StsBackTrace, "Can't infer a dim denoted by -1");
+        
+        dstShape[inferDim] = (int)(srcTotal / dstTotal);
+    }
+    else
+    {
+        CV_Assert(srcTotal == dstTotal);
     }
 }
 
-void ReshapeLayerImpl::forward(std::vector<Blob*> &inputs, std::vector<Blob> &outputs)
+
+class ReshapeLayerImpl : public ReshapeLayer
 {
-    for (size_t i = 0; i < outputs.size(); i++)
+public:
+    std::vector<int> outShape;
+    bool enableReordering;
+    bool channelsReduced;
+    bool performReordering;
+
+    ReshapeLayerImpl(const std::vector<int> &newShape_, Range applyingRange_, bool enableReordering_)
     {
-        Blob& srcBlob = *inputs[i];
-        BlobShape inputShape = inputs[i]->shape();
-        bool channelsReduced = inputShape.dims() > outShapes[i].dims() ||
-                (inputShape.dims() == 4 && inputShape[1] > outShapes[i][1]);
-        bool performReordering = enableReordering && inputShape.dims() == 4 && channelsReduced;
+        newShapeDesc = newShape_;
+        newShapeRange = applyingRange_;
+        enableReordering = enableReordering_;
+        channelsReduced = performReordering = false;
+    }
 
-        if (performReordering)
+    void allocate(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+    {
+        CV_Assert(inputs.total() == 1);
+        outputs.resizeVector(1);
+
+        Mat inp = inputs.getMat(0);
+        CV_Assert(inp.isContinuous());
+        std::vector<int> shape;
+        inp.getShape(shape);
+        computeShapeByReshapeMask(shape, newShapeDesc, newShapeRange, outShape);
+        channelsReduced = inp.dims > (int)outShape.size() || inp.size[0] > outShape[0];
+        performReordering = enableReordering && channelsReduced;
+
+        if(performReordering)
+            outputs.create((int)outShape.size(), &outShape[0], inp.type(), 0);
+        else
         {
-            Blob reordered_blob(inputShape, inputs[i]->type());
+            Mat& out = outputs.getMatRef(0);
+            out = out.reshape(1, (int)outShape.size(), &outShape[0]);
+        }
+    }
 
-            float *dstData = reordered_blob.matRef().ptr<float>();
-            const float *srcData = srcBlob.matRefConst().ptr<float>();
+    void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+    {
+        if( performReordering )
+        {
+            Mat srcBlob = inputs.getMat(0);
+            Mat dstBlob = outputs.getMat(0);
 
-            int num = inputShape[0], channels = inputShape[1], height = inputShape[2], width = inputShape[3];
-            int total = num*channels*height*width;
-            for(int i_n = 0; i_n < num; i_n++) {
-                for(int i_c = 0; i_c < channels; i_c++) {
-                    for(int i_h = 0; i_h < height; i_h++) {
-                        for(int i_w = 0; i_w < width; i_w++) {
-                           int src_i = channels*height*width*i_n + height*width*i_c + width*i_h + i_w;
-                           int dst_i = channels*height*width*i_n + i_c + channels*width*i_h + channels*i_w;
+            CV_Assert(srcBlob.total() == dstBlob.total() && srcBlob.data != dstBlob.data);
 
-                           CV_Assert(dst_i < total);
-                           CV_Assert(src_i < total);
+            const float *srcData = srcBlob.ptr<float>();
+            float *dstData = dstBlob.ptr<float>();
+            int channels = srcBlob.size[0], height = srcBlob.size[1], width = srcBlob.size[2];
 
-                           dstData[dst_i] = srcData[src_i];
-                        }
+            for( int i_h = 0; i_h < height; i_h++ )
+            {
+                for( int i_w = 0; i_w < width; i_w++ )
+                {
+                    for( int i_c = 0; i_c < channels; i_c++ )
+                    {
+                        int src_i = height*width*i_c + width*i_h + i_w;
+                        int dst_i = i_c + channels*width*i_h + channels*i_w;
+
+                        dstData[dst_i] = srcData[src_i];
                     }
                 }
             }
-
-            srcBlob = reordered_blob;
         }
-
-        outputs[i].shareFrom(srcBlob);
-        outputs[i].reshape(outShapes[i]);
     }
-}
+};
 
-Ptr<ReshapeLayer> ReshapeLayer::create(const BlobShape &newShape, Range applyingRange /*= Range::all()*/,
-                                       bool enableReordering /*= false*/)
+Ptr<ReshapeLayer> ReshapeLayer::create(const std::vector<int> &newShape,
+                                       Range applyingRange,
+                                       bool enableReordering)
 {
     return Ptr<ReshapeLayer>(new ReshapeLayerImpl(newShape, applyingRange, enableReordering));
 }
 
+Ptr<ReshapeLayer> ReshapeLayer::create(const LayerParams &params)
+{
+    int axis = params.get<int>("axis", 0);
+    int numAxes = params.get<int>("num_axes", -1);
+    bool enableReordering = params.get<bool>("reorder_dims", false);
+    CV_Assert(numAxes >= -1);
+    Range applyingRange = (numAxes == -1) ? Range(axis, INT_MAX) : Range(axis, axis + numAxes);
+
+    std::vector<int> newShape;
+    if (params.has("dim"))
+    {
+        const DictValue &paramShape = params.get("dim");
+        int i, n = paramShape.size();
+        newShape.resize(n);
+        for (i = 0; i < n; i++)
+            newShape[i] = paramShape.get<int>(i);
+    }
+
+    Ptr<ReshapeLayer> l(new ReshapeLayerImpl(newShape, applyingRange, enableReordering));
+    l->setParamsFrom(params);
+
+    return l;
+}
 
 }
 }

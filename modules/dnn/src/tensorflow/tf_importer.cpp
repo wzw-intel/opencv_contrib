@@ -51,16 +51,19 @@ struct Pin
     int blobIndex;
 };
 
+typedef Mat Blob;
+typedef std::vector<int> BlobShape;
+
 BlobShape blobShapeFromTensor(const tensorflow::TensorProto &tensor)
 {
     if (tensor.has_tensor_shape())
     {
         const tensorflow::TensorShapeProto &_shape = tensor.tensor_shape();
-        BlobShape shape = BlobShape::all(_shape.dim_size());
+        int i, n = _shape.dim_size();
+        BlobShape shape(n);
 
-        for (int i = 0; i < _shape.dim_size(); i++)
+        for (i = 0; i < n; i++)
             shape[i] = (int)_shape.dim(i).size();
-
         return shape;
     }
     else
@@ -75,7 +78,7 @@ void parseTensor(const tensorflow::TensorProto &tensor, Blob &dstBlob)
 {
     BlobShape shape = blobShapeFromTensor(tensor);
 
-    if (shape.dims() == 4)
+    if (shape.size() == 4)
     {
         // REORDER blob NHWC to NCHW
         swap(shape[2], shape[3]); // NHCW
@@ -84,13 +87,13 @@ void parseTensor(const tensorflow::TensorProto &tensor, Blob &dstBlob)
 
     dstBlob.create(shape, CV_32F);
 
-    int size = tensor.tensor_content().size() / sizeof(T);
-    CV_Assert(size == (int)dstBlob.matRefConst().total());
+    size_t size = tensor.tensor_content().size() / sizeof(T);
+    CV_Assert(size == dstBlob.total());
 
-    float *dstData = dstBlob.matRef().ptr<float>();
+    float *dstData = dstBlob.ptr<float>();
     const T *data = reinterpret_cast<const T*>(tensor.tensor_content().c_str());
 
-    if (shape.dims() == 4)
+    if (shape.size() == 4)
     {
         int num = shape[0], channels = shape[1], height = shape[2], width = shape[3];
         int total = num*channels*height*width;
@@ -238,7 +241,7 @@ DictValue parseDims(const tensorflow::TensorProto &tensor) {
     BlobShape shape = blobShapeFromTensor(tensor);
 
     CV_Assert(tensor.dtype() == tensorflow::DT_INT32);
-    CV_Assert(shape.dims() == 1);
+    CV_Assert(shape.size() == 1);
 
     int size = tensor.tensor_content().size() / sizeof(int);
     const int *data = reinterpret_cast<const int*>(tensor.tensor_content().c_str());
@@ -397,7 +400,7 @@ void TFImporter::kernelFromTensor(const tensorflow::TensorProto &tensor, Blob &d
 
     // TODO: other blob types
     CV_Assert(tensor.dtype() == tensorflow::DT_FLOAT);
-    CV_Assert(shape.dims() == 4);
+    CV_Assert(shape.size() == 4);
 
     // REORDER kernel HWIO to OIHW
     swap(shape[0], shape[2]); // IWHO
@@ -406,10 +409,10 @@ void TFImporter::kernelFromTensor(const tensorflow::TensorProto &tensor, Blob &d
 
     dstBlob.create(shape, CV_32F);
 
-    int size = tensor.tensor_content().size() / sizeof(float);
-    CV_Assert(size == (int)dstBlob.matRefConst().total());
+    size_t size = tensor.tensor_content().size() / sizeof(float);
+    CV_Assert(size == dstBlob.total());
 
-    float *dstData = dstBlob.matRef().ptr<float>();
+    float *dstData = dstBlob.ptr<float>();
     const float *data = reinterpret_cast<const float*>(tensor.tensor_content().c_str());
 
     int out_c = shape[0], input_c = shape[1], height = shape[2], width = shape[3];
@@ -533,7 +536,8 @@ void TFImporter::populateNet(Net dstNet)
             }
 
             kernelFromTensor(getConstBlob(layer, value_id), layerParams.blobs[0]);
-            BlobShape kshape = layerParams.blobs[0].shape();
+            BlobShape kshape;
+            layerParams.blobs[0].getShape(kshape);
             layerParams.set("kernel_h", kshape[2]);
             layerParams.set("kernel_w", kshape[3]);
             layerParams.set("num_output", kshape[0]);
@@ -588,12 +592,12 @@ void TFImporter::populateNet(Net dstNet)
             blobFromTensor(getConstBlob(layer, value_id, -1, &kernel_blob_index), layerParams.blobs[0]);
 
             if (kernel_blob_index == 1) { // In this case output is computed by x*W formula - W should be transposed
-                Mat data = layerParams.blobs[0].matRef().t();
-                BlobShape shape(data.rows, data.cols);
-                layerParams.blobs[0].fill(shape, layerParams.blobs[0].type(), data.data);
+                Mat data = layerParams.blobs[0].t();
+                layerParams.blobs[0] = data;
             }
 
-            BlobShape kshape = layerParams.blobs[0].shape();
+            BlobShape kshape;
+            layerParams.blobs[0].getShape(kshape);
             layerParams.set("num_output", kshape[0]);
 
             int id = dstNet.addLayer(name, "InnerProduct", layerParams);

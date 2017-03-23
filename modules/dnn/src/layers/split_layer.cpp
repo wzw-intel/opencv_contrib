@@ -41,47 +41,59 @@
 
 #include "../precomp.hpp"
 #include "layers_common.hpp"
-#include "split_layer.hpp"
-#include <opencv2/core/ocl.hpp>
 
 namespace cv
 {
 namespace dnn
 {
 
-SplitLayerImpl::SplitLayerImpl(int outputsCount_ /*= -1*/)
+class SplitLayerImpl : public SplitLayer
 {
-    outputsCount = outputsCount_;
-}
-
-void SplitLayerImpl::allocate(const std::vector<Blob*> &inputs, std::vector<Blob> &outputs)
-{
-    CV_Assert(inputs.size() == 1);
-    useOpenCL = ocl::useOpenCL() && inputs[0]->getState() == Blob::HEAD_AT_UMAT;
-    int allocFlags = useOpenCL ? Blob::ALLOC_UMAT : Blob::ALLOC_MAT;
-
-    if (outputsCount >= 0)
-        outputs.resize(outputsCount);
-
-    for (size_t i = 0; i < outputs.size(); i++)
-        outputs[i].create(inputs[0]->shape(), inputs[0]->type(), allocFlags);
-}
-
-void SplitLayerImpl::forward(std::vector<Blob*> &inputs, std::vector<Blob> &outputs)
-{
-    for (size_t i = 0; i < outputs.size(); i++)
+public:
+    SplitLayerImpl(int outputsCount_ = -1)
     {
-        if (useOpenCL)
-            inputs[0]->umatRefConst().copyTo(outputs[i].umatRef());
-        else
-            inputs[0]->matRefConst().copyTo(outputs[i].matRef());
+        outputsCount = outputsCount_;
     }
-}
 
+    void allocate(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+    {
+        CV_Assert(inputs.total() == 1);
+        Mat inp = inputs.getMat(0);
+
+        std::vector<Mat>& outp = outputs.getMatVecRef();
+        size_t i, noutputs = outputsCount > 0 ? (size_t)outputsCount : outp.size();
+        outputs.resizeVector(noutputs);
+
+        for (i = 0; i < noutputs; i++)
+            outputs.create(inp.dims, &inp.size.p[0], inp.type(), i);
+    }
+
+    void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+    {
+        Mat inp = inputs.getMat(0);
+        size_t i, noutputs = outputs.total();
+        for (i = 0; i < noutputs; i++)
+        {
+            Mat& outp = outputs.getMatRef(i);
+            inp.copyTo(outp);
+        }
+    }
+};
 
 Ptr<SplitLayer> SplitLayer::create(int outputsCount)
 {
     return Ptr<SplitLayer>(new SplitLayerImpl(outputsCount));
+}
+
+Ptr<SplitLayer> SplitLayer::create(const LayerParams& params)
+{
+    //TODO: maybe "top_count" param is useless because it can be determined by output connections number
+    int outputsCount = params.get<int>("top_count", -1);
+    
+    Ptr<SplitLayer> l(new SplitLayerImpl(outputsCount));
+    l->setParamsFrom(params);
+
+    return l;
 }
 
 }

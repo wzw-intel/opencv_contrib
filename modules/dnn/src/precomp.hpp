@@ -39,6 +39,10 @@
 //
 //M*/
 
-#include <opencv2/core.hpp>
+#include "opencv2/core.hpp"
+#include "opencv2/core/types_c.h"
 #include "cvconfig.h"
-#include <opencv2/dnn.hpp>
+#include "opencv2/dnn.hpp"
+#include "opencv2/dnn/all_layers.hpp"
+#include "opencv2/core/ocl.hpp"
+#include <algorithm>

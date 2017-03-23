@@ -51,9 +51,10 @@ namespace dnn
 
 //Common template for Caffe layer loaders
 template <typename PublicLayer>
-Ptr<Layer> createLayerFromCaffe(LayerParams&);
-
-Ptr<Layer> createFlattenLayerFromCaffe(LayerParams&);
+Ptr<Layer> createLayerFromCaffe(const LayerParams& params)
+{
+    return PublicLayer::create(params);
+}
 
 }
 }

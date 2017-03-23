@@ -41,88 +41,108 @@
 
 #include "../precomp.hpp"
 #include "layers_common.hpp"
-#include "eltwise_layer.hpp"
 
+#if 0
 namespace cv
 {
 namespace dnn
 {
-    EltwiseLayerImpl::EltwiseLayerImpl(EltwiseOp op_, const std::vector<int> &coeffs_)
+
+class EltwiseLayerImpl : public EltwiseLayer
+{
+    EltwiseOp op;
+    std::vector<int> coeffs;
+public:
+    EltwiseLayerImpl(EltwiseOp op, const std::vector<int> &coeffs);
+    void allocate(InputArrayOfArrays inputs, OutputArrayOfArrays outputs);
+    void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs);
+};
+
+EltwiseLayerImpl::EltwiseLayerImpl(EltwiseOp op_, const std::vector<int> &coeffs_)
+{
+    op = op_;
+    coeffs = coeffs_;
+}
+
+void EltwiseLayerImpl::allocate(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+{
+    size_t ninputs = inputs.total(), ncoeffs = coeffs.size();
+    CV_Assert(2 <= ninputs);
+    CV_Assert(ncoeffs == 0 || ncoeffs == ninputs);
+    CV_Assert(op == SUM || ncoeffs == 0);
+
+    Mat inp0 = inputs.getMat(0);
+    for (size_t i = 1; i < ninputs; ++i)
     {
-        op = op_;
-        coeffs = coeffs_;
+        Mat inp = inputs.getMat(i);
+        CV_Assert(inp0.size == inp.size);
     }
+    std::vector<Mat>& outp = outputs.getMatVecRef();
+    outp.resize(1);
+    outp[0].create(inp0.dims, inp0.size.p, inp0.type());
+}
 
-    void EltwiseLayerImpl::allocate(const std::vector<Blob *> &inputs, std::vector<Blob> &outputs)
+void EltwiseLayerImpl::forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
+{
+    size_t i, ninputs = inputs.total(), ncoeffs = coeffs.size();
+    Mat output = outputs.getMat(0);
+
+    switch (op)
     {
-        CV_Assert(2 <= inputs.size());
-        CV_Assert(coeffs.size() == 0 || coeffs.size() == inputs.size());
-        CV_Assert(op == SUM || coeffs.size() == 0);
-
-        const BlobShape &shape0 = inputs[0]->shape();
-        for (size_t i = 1; i < inputs.size(); ++i)
+    case SUM:
         {
-            BlobShape iShape = inputs[i]->shape();
-            CV_Assert(shape0 == iShape);
+            CV_Assert(ncoeffs == 0 || ncoeffs == ninputs);
+            output.setTo(0.);
+            if (0 < ncoeffs)
+            {
+                addWeighted(inputs.getMat(0), coeffs[0],
+                            inputs.getMat(1), coeffs[1],
+                            0, output);
+                for (i = 2; i < ninputs; i++)
+                {
+                    Mat inp = inputs.getMat(i);
+                    scaleAdd(inp, coeffs[i], output, output);
+                }
+            }
+            else
+            {
+                add(inputs.getMat(0), inputs.getMat(1), output);
+                for (i = 2; i < ninputs; i++)
+                {
+                    Mat inp = inputs.getMat(i);
+                    add(inp, output, output);
+                }
+            }
         }
-        outputs.resize(1);
-        outputs[0].create(shape0);
-    }
-
-    void EltwiseLayerImpl::forward(std::vector<Blob *> &inputs, std::vector<Blob> &outputs)
-    {
-        switch (op)
+        break;
+    case PROD:
+        multiply(inputs.getMat(0), inputs.getMat(1), output);
+        for (i = 1; i < ninputs; i++)
         {
-        case SUM:
-            {
-                CV_Assert(coeffs.size() == 0 || coeffs.size() == inputs.size());
-                Mat& output = outputs[0].matRef();
-                output.setTo(0.);
-                if (0 < coeffs.size())
-                {
-                    for (size_t i = 0; i < inputs.size(); i++)
-                    {
-                        output += inputs[i]->matRefConst() * coeffs[i];
-                    }
-                }
-                else
-                {
-                    for (size_t i = 0; i < inputs.size(); i++)
-                    {
-                        output += inputs[i]->matRefConst();
-                    }
-                }
-            }
-            break;
-        case PROD:
-            {
-                Mat& output = outputs[0].matRef();
-                output.setTo(1.);
-                for (size_t i = 0; i < inputs.size(); i++)
-                {
-                    output = output.mul(inputs[i]->matRefConst());
-                }
-            }
-            break;
-        case MAX:
-            {
-                Mat& output = outputs[0].matRef();
-                cv::max(inputs[0]->matRefConst(), inputs[1]->matRefConst(), output);
-                for (size_t i = 2; i < inputs.size(); i++)
-                {
-                    cv::max(output, inputs[i]->matRefConst(), output);
-                }
-            }
-            break;
-        default:
-            CV_Assert(0);
-            break;
-        };
-    }
+            Mat inp = inputs.getMat(i);
+            multiply(inp, output, output);
+        }
+        break;
+    case MAX:
+        cv::max(inputs.getMat(0), inputs.getMat(1), output);
+        for (i = 1; i < ninputs; i++)
+        {
+            Mat inp = inputs.getMat(i);
+            cv::max(inp, output, output);
+        }
+        break;
+    default:
+        CV_Assert(0);
+        break;
+    };
+}
 
-    Ptr<EltwiseLayer> EltwiseLayer::create(EltwiseOp op, const std::vector<int> &coeffs)
-    {
-        return Ptr<EltwiseLayer>(new EltwiseLayerImpl(op, coeffs));
-    }
+Ptr<EltwiseLayer> EltwiseLayer::create(EltwiseOp op, const std::vector<int> &coeffs)
+{
+    return Ptr<EltwiseLayer>(new EltwiseLayerImpl(op, coeffs));
+}
+
 }
 }
+#endif
+

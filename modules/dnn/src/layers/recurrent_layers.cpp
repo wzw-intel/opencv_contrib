@@ -40,12 +40,12 @@
 //M*/
 
 #include "../precomp.hpp"
-#include "recurrent_layers.hpp"
 #include "op_blas.hpp"
 #include <iostream>
 #include <cmath>
 #include <opencv2/dnn/shape_utils.hpp>
 
+#if 0
 namespace cv
 {
 namespace dnn
@@ -440,3 +440,5 @@ CV_EXPORTS_W Ptr<RNNLayer> RNNLayer::create()
 
 }
 }
+#endif
+

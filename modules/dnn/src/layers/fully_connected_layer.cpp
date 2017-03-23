@@ -41,88 +41,99 @@
 
 #include "../precomp.hpp"
 #include "layers_common.hpp"
-#include "fully_connected_layer.hpp"
 #include "op_blas.hpp"
 #include <opencv2/dnn/shape_utils.hpp>
-#include <opencv2/core/ocl.hpp>
 
 namespace cv
 {
 namespace dnn
 {
 
-FullyConnectedLayerImpl::FullyConnectedLayerImpl(int axis_)
+class FullyConnectedLayerImpl : public FullyConnectedLayer
 {
-    axis = axis_;
-}
-
-void FullyConnectedLayerImpl::allocate(const std::vector<Blob*> &input, std::vector<Blob> &output)
-{
-    CV_Assert(input.size() > 0);
-    CV_Assert(1 <= blobs.size() && blobs.size() <= 2);
-    CV_Assert(blobs[0].dims() == 2);
-
-    bias = (blobs.size() >= 1);
-    axisCan = input[0]->canonicalAxis(axis);
-    dtype = input[0]->type();
-    numOutput = blobs[0].size(0);
-    innerSize = blobs[0].size(1);
-    outerSize = input[0]->total(0, axisCan);
-
-    CV_Assert((size_t)innerSize == input[0]->total(axisCan));
-    CV_Assert(!bias || (size_t)numOutput == blobs[1].total());
-
-    useOpenCL = ocl::useOpenCL();
-    int allocFlags = useOpenCL ? Blob::ALLOC_UMAT : Blob::ALLOC_UMAT;
-
-    biasOnesBlob.create(Shape(outerSize, 1), dtype, allocFlags);
-    biasOnesBlob.setTo(1);
-
-    output.resize(input.size());
-    for (size_t i = 0; i < input.size(); i++)
+public:
+    FullyConnectedLayerImpl(int axis_ = 1) { axis = axis_; }
+    void allocate(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
     {
-        CV_Assert(i == 0 || (input[i]->equalShape(*input[0]) && input[i]->type() == dtype));
-        Shape outShape = Shape(outerSize, numOutput);
-        output[i].create(outShape, dtype, allocFlags);
-    }
-}
+        CV_Assert(inputs.total() == 1);
+        CV_Assert(1 <= blobs.size() && blobs.size() <= 2);
+        CV_Assert(blobs[0].dims == 2);
 
-void FullyConnectedLayerImpl::forward(std::vector<Blob*> &input, std::vector<Blob> &output)
-{
-    #ifdef HAVE_OPENCL
-    if (useOpenCL)
-        forward_<UMat>(input, output);
-    else
-    #endif
-        forward_<Mat>(input, output);
-}
+        bias = (blobs.size() >= 1);
+        Mat input0 = inputs.getMat(0);
 
-template<typename XMat>
-void FullyConnectedLayerImpl::forward_(std::vector<Blob *> &input, std::vector<Blob> &output)
-{
-    const XMat &weight = blobs[0].getRefConst<XMat>();
-    const XMat *biasMat = NULL, *biasOnesMat = NULL;
-    if (bias)
-    {
-        biasOnesMat = &biasOnesBlob.getRefConst<XMat>();
-        biasMat = &blobs[1].getRefConst<XMat>();
+        dtype = input0.type();
+        numOutput = blobs[0].size[0];
+        innerSize = blobs[0].size[1];
+        int i = 0, innerSize_ = 1;
+
+        outerSize = 1;
+        for(; i < axis; i++)
+            outerSize *= input0.size[i];
+        for(; i < input0.dims; i++)
+            innerSize_ *= input0.size[i];
+
+        CV_Assert(innerSize == innerSize_);
+        CV_Assert(!bias || (size_t)numOutput == blobs[1].total());
+
+        biasOnesBlob.create(outerSize, 1, dtype);
+        biasOnesBlob.setTo(1.);
+
+        outputs.resizeVector(1);
+        outputs.create(outerSize, numOutput, dtype, 0);
     }
 
-    for (size_t i = 0; i < input.size(); i++)
+    void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
     {
-        const XMat srcMat = reshaped(input[i]->getRefConst<XMat>(), Shape(outerSize, innerSize));
-        XMat dstMat = reshaped(output[i].getRef<XMat>(), Shape(outerSize, numOutput));
+        const Mat &weight = blobs[0];
+        const Mat *biasMat = NULL, *biasOnesMat = NULL;
+        if (bias)
+        {
+            biasOnesMat = &biasOnesBlob;
+            biasMat = &blobs[1];
+        }
+
+        int srcsz[] = { outerSize, innerSize };
+        int dstsz[] = { outerSize, numOutput };
+        Mat srcMat = inputs.getMat(0).reshape(1, 2, srcsz);
+        Mat dstMat = outputs.getMat(0).reshape(1, 2, dstsz);
+
         dnn::gemm(srcMat, weight, 1, dstMat, 0, GEMM_2_T);
-
+        
         if (bias)
             dnn::gemm(*biasOnesMat, *biasMat, 1, dstMat, 1);
     }
+
+    int dtype;
+    int numOutput, innerSize, outerSize;
+    bool bias;
+    Mat biasOnesBlob;
+};
+
+Ptr<FullyConnectedLayer> FullyConnectedLayer::create(int axis)
+{
+    return Ptr<FullyConnectedLayer>(new FullyConnectedLayerImpl(axis));
 }
 
-
-Ptr<InnerProductLayer> InnerProductLayer::create(int axis)
+Ptr<FullyConnectedLayer> FullyConnectedLayer::create(const LayerParams& params)
 {
-    return Ptr<InnerProductLayer>(new FullyConnectedLayerImpl(axis));
+    const std::vector<Mat> &blobs = params.blobs;
+    CV_Assert(1 <= blobs.size() && blobs.size() <= 2);
+
+    int numOutput = params.get<int>("num_output");
+    int innerSize = (int)blobs[0].total() / numOutput;
+    bool bias = params.get<bool>("bias_term", true);
+    int axis = params.get<int>("axis", 1);
+
+    CV_Assert(blobs[0].dims >= 2 && (size_t)(innerSize * numOutput) == blobs[0].total());
+    CV_Assert(!bias || (blobs.size() == 2 && (size_t)numOutput == blobs[1].total()));
+
+    Ptr<FullyConnectedLayer> l(new FullyConnectedLayerImpl(axis));
+    l->setParamsFrom(params);
+    l->blobs[0].reshape(1, numOutput);
+    if (bias)
+        l->blobs[1].reshape(1, 1);
+    return l;
 }
 
 }

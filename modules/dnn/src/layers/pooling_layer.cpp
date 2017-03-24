@@ -56,7 +56,7 @@ namespace dnn
 class PoolingLayerImpl : public PoolingLayer
 {
 public:
-    Size inp, out;
+    Size inpsz, outsz;
 
     //TODO: add ceil_mode param
     PoolingLayerImpl(int type_, bool globalPooling_, Size kernel_=Size(1,1),
@@ -78,22 +78,22 @@ public:
         Mat inp = inputs.getMat(0);
         CV_Assert(inp.dims == 3);
 
-        Size inpsz(inp.size[2], inp.size[1]);
+        inpsz = Size(inp.size[2], inp.size[1]);
 
         if(globalPooling)
         {
             kernel = inpsz;
         }
 
-        computeOutputShape(inpsz);
+        outsz = computeOutputShape(inpsz);
         std::vector<Mat>& outp = outputs.getMatVecRef();
         size_t noutputs = type == MAX ? 2 : 1;
 
         outp.resize(noutputs);
-        int outsz[] = { inp.size[0], out.height, out.width };
+        int sz[] = { inp.size[0], outsz.height, outsz.width };
 
         for( size_t i = 0; i < noutputs; i++ )
-            outp[i].create(3, outsz, inp.type());
+            outp[i].create(3, sz, inp.type());
     }
 
     void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
@@ -101,10 +101,16 @@ public:
         Mat inp0 = inputs.getMat(0);
         Mat out0 = outputs.getMat(0);
         Mat out1;
+        CV_Assert(inp0.dims == 3 && inp0.size[1] == inpsz.height && inp0.size[2] == inpsz.width );
+        CV_Assert(out0.dims == 3 && out0.size[0] == inp0.size[0] &&
+                  out0.size[1] == outsz.height && out0.size[2] == outsz.width );
+
         switch (type)
         {
             case MAX:
                 out1 = outputs.getMat(1);
+                CV_Assert(out1.dims == 3 && out1.size[0] == inp0.size[0] &&
+                          out1.size[1] == outsz.height && out1.size[2] == outsz.width );
                 maxPooling(inp0, out0, out1);
                 break;
             case AVE:
@@ -116,8 +122,9 @@ public:
         }
     }
 
-    void computeOutputShape(Size inpSz)
+    Size computeOutputShape(Size inpSz)
     {
+        Size out;
         if (padMode.empty()) {
             //Yeah, some strange Caffe scheme-)
             out.height = static_cast<int>(ceil(static_cast<float>(inpSz.height + 2 * pad.height -
@@ -142,78 +149,101 @@ public:
             getConvPoolOutParams(inpSz.height, inpSz.width, kernel, stride, pad,
                                  padMode, out.height, out.width);
         }
+        return out;
     }
 
     void maxPooling(const Mat &src, Mat &dst, Mat &mask)
     {
-        CV_DbgAssert(dst.rows == out.height && dst.cols == out.width);
+        Size isz = inpsz, osz = outsz;
+        int nchannels = src.size[0];
+        CV_Assert(src.type() == CV_32F && dst.type() == CV_32F && mask.type() == CV_32F);
+        CV_Assert(src.dims == 3 && dst.dims == 3 && mask.dims == 3);
+        CV_Assert(dst.size[1] == osz.height && dst.size[2] == osz.width);
+        CV_Assert(mask.size[1] == osz.height && mask.size[2] == osz.width);
+        CV_Assert(src.size[1] == isz.height && src.size[2] == isz.width);
+        CV_Assert(dst.size[0] == nchannels && mask.size[0] == nchannels);
+        CV_Assert(src.isContinuous() && dst.isContinuous() && mask.isContinuous());
 
-        for (int c = 0; c < src.channels(); ++c)
+        /*printf("kernel=(%d x %d), padding=(%d x %d), stride=(%d x %d), isz=(%d x %d), osz=(%d x %d), idxdata=%p\n", kernel.width, kernel.height, pad.width, pad.height, stride.width, stride.height, isz.width, isz.height, osz.width, osz.height, mask.ptr<float>());*/
+
+        for (int c = 0; c < nchannels; ++c)
         {
             const float *srcData = src.ptr<float>(c);
             float *dstData = dst.ptr<float>(c);
             float *dstMaskData = mask.ptr<float>(c);
 
-            for (int ph = 0; ph < out.height; ++ph)
+            for (int ph = 0; ph < osz.height; ++ph)
             {
-                for (int pw = 0; pw < out.width; ++pw)
+                for (int pw = 0; pw < osz.width; ++pw)
                 {
                     int hstart = ph * stride.height - pad.height;
                     int wstart = pw * stride.width - pad.width;
-                    int hend = min(hstart + kernel.height, inp.height);
-                    int wend = min(wstart + kernel.width, inp.width);
+                    int hend = min(hstart + kernel.height, isz.height);
+                    int wend = min(wstart + kernel.width, isz.width);
                     hstart = max(hstart, 0);
                     wstart = max(wstart, 0);
-                    const int poolIndex = ph * out.width + pw;
+                    int poolIndex = ph * osz.width + pw;
                     float max_val = -FLT_MAX;
                     int max_index = -1;
 
                     for (int h = hstart; h < hend; ++h)
                         for (int w = wstart; w < wend; ++w)
                         {
-                            const int index = h * inp.width + w;
-                            if (srcData[index] > max_val)
+                            int index = h * isz.width + w;
+                            float val = srcData[index];
+                            if (val > max_val)
                             {
-                                max_val = srcData[index];
+                                max_val = val;
                                 max_index = index;
                             }
                         }
-                    
+
                     dstData[poolIndex] = max_val;
                     dstMaskData[poolIndex] = max_index;
                 }
             }
         }
+        /*double minval=0, maxval=0;
+        minMaxIdx(mask, &minval, &maxval);
+        printf("minval=%g, maxval=%g\n", minval, maxval);*/
     }
 
     void avePooling(const Mat &src, Mat &dst)
     {
-        for (int c = 0; c < src.channels(); ++c)
+        Size isz = inpsz, osz = outsz;
+        int nchannels = src.size[0];
+        CV_Assert(src.type() == CV_32F && dst.type() == CV_32F);
+        CV_Assert(src.dims == 3 && dst.dims == 3);
+        CV_Assert(dst.size[1] == osz.height && dst.size[2] == osz.width);
+        CV_Assert(src.size[1] == isz.height && src.size[2] == isz.width);
+        CV_Assert(dst.size[0] == nchannels);
+        CV_Assert(src.isContinuous() && dst.isContinuous());
+
+        for (int c = 0; c < src.size[0]; ++c)
         {
             const float *srcData = src.ptr<float>(c);
             float *dstData = dst.ptr<float>(c);
 
-            for (int ph = 0; ph < out.height; ++ph)
+            for (int ph = 0; ph < osz.height; ++ph)
             {
-                for (int pw = 0; pw < out.width; ++pw)
+                for (int pw = 0; pw < osz.width; ++pw)
                 {
                     int hstart = ph * stride.height - pad.height;
                     int wstart = pw * stride.width - pad.width;
-                    int hend = min(hstart + kernel.height, inp.height + pad.height);
-                    int wend = min(wstart + kernel.width, inp.width + pad.width);
+                    int hend = min(hstart + kernel.height, isz.height + pad.height);
+                    int wend = min(wstart + kernel.width, isz.width + pad.width);
                     int poolSize = (hend - hstart) * (wend - wstart);
                     hstart = max(hstart, 0);
                     wstart = max(wstart, 0);
-                    hend = min(hend, inp.height);
-                    wend = min(wend, inp.width);
-
-                    dstData[ph * out.width + pw] = 0.f;
+                    hend = min(hend, isz.height);
+                    wend = min(wend, isz.width);
+                    float s = 0.f;
 
                     for (int h = hstart; h < hend; ++h)
                         for (int w = wstart; w < wend; ++w)
-                            dstData[ph * out.width + pw] += srcData[h * inp.width + w];
+                            s += srcData[h * isz.width + w];
                     
-                    dstData[ph * out.width + pw] /= poolSize;
+                    dstData[ph * osz.width + pw] = s / poolSize;
                 }
             }
         }

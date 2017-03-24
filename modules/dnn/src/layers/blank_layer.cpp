@@ -49,7 +49,7 @@ namespace dnn
 class BlankLayerImpl : public BlankLayer
 {
 public:
-    BlankLayerImpl() {}
+    BlankLayerImpl() { name="blank"; }
 
     void allocate(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
     {
@@ -57,6 +57,9 @@ public:
         CV_Assert(inputs.kind() == _InputArray::STD_VECTOR_MAT &&
                   outputs.kind() == _InputArray::STD_VECTOR_MAT);
         outputs.resizeVector(1);
+        Mat inp = inputs.getMat(0);
+        Mat& outp = outputs.getMatRef(0);
+        outp = inp;
     }
 
     void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)

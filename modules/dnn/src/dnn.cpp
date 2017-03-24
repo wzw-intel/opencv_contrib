@@ -372,6 +372,22 @@ struct Net::Impl
         {
             Ptr<Layer> layerPtr = ld.getLayerInstance();
             layerPtr->allocate(ld.inputBlobs, ld.outputBlobs);
+            int sz0 = 0, sz1 = 0, sz2 = 0;
+            Mat outp0 = ld.outputBlobs[0];
+            if(outp0.dims == 3)
+            {
+                sz0 = outp0.size[0];
+                sz1 = outp0.size[1];
+                sz2 = outp0.size[2];
+            }
+            else if(outp0.dims == 2)
+            {
+                sz1 = outp0.size[0];
+                sz2 = outp0.size[1];
+            }
+
+            printf("layer name: %s, layer output: %d x (%d x %d x %d), type=%d\n",
+                   layerPtr->name.c_str(), (int)ld.outputBlobs.size(), sz0, sz1, sz2, outp0.type());
         }
         /*catch (const cv::Exception &err)
         {
@@ -387,9 +403,11 @@ struct Net::Impl
         for (it = layers.begin(); it != layers.end(); it++)
             it->second.flag = 0;
 
-        for (it = layers.begin(); it != layers.end(); it++)
+        int idx = 0;
+        for (it = layers.begin(); it != layers.end(); it++, idx++)
         {
             int lid = it->first;
+            printf("%d. ", idx);
             allocateLayer(lid);
         }
     }
@@ -432,8 +450,20 @@ struct Net::Impl
         for (it = layers.begin(); it != layers.end(); it++)
             it->second.flag = 0;
 
-        for (it = layers.begin(); it != layers.end(); it++)
+        int idx = 0;
+        for (it = layers.begin(); it != layers.end(); it++, idx++)
+        {
+            //printf("running %d: %s\n", idx, it->second.name.c_str());
+            /*if( idx > 100 )
+            {
+                vector<Mat> outp = it->second.outputBlobs;
+                size_t j, n = outp.size();
+                for( j = 0; j < n; j++ )
+                    outp[j].setTo(Scalar::all(0));
+            }
+            else*/
             forwardLayer(it->second, false);
+        }
     }
 };
 
@@ -535,7 +565,7 @@ void Net::setImage(String layerName, const Mat &img0, bool swap_rb)
 
     const int NCHANNELS = 3;
     int sz[] = { NCHANNELS, img0.rows, img0.cols };
-    blob.create(3, sz, CV_8U);
+    blob.create(3, sz, CV_32F);
     Mat planes[NCHANNELS];
 
     for( int i = 0; i < NCHANNELS; i++ )

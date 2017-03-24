@@ -133,6 +133,7 @@ public:
         Mat outMat_ = outputs.getMat(0);
         Mat outMat = outMat_.reshape(1, outCn);
 
+        CV_Assert(inpMat.type() == CV_32F && outMat.type() == CV_32F);
         CV_Assert(outMat.cols == outH*outW);
         im2col(inpMat, colMat);
 
@@ -190,7 +191,8 @@ class DeconvolutionLayerImpl : public BaseConvolutionLayerImpl
 public:
     virtual void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
     {
-        Mat weightsMat = blobs[0].reshape(1, inpCn);
+        Mat b0 = blobs[0];
+        Mat weightsMat = b0.reshape(1, inpCn);
         CV_Assert(weightsMat.cols == ksize);
 
         Mat biasesMat = bias ? blobs[1].reshape(1, outCn) : Mat();
@@ -215,7 +217,7 @@ protected:
 
     virtual void computeInpOutShape(const Mat &inpBlob)
     {
-        outCn = blobs[0].size[0];
+        outCn = blobs[0].size[1];
         CV_Assert(!bias || blobs[1].total() == (size_t)outCn);
 
         inpH = inpBlob.size[1];

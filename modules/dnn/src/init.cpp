@@ -90,7 +90,7 @@ void initModule()
     REG_RUNTIME_LAYER_FUNC(Identity,        createLayerFromCaffe<BlankLayer>);
 
     REG_RUNTIME_LAYER_FUNC(Crop,            createLayerFromCaffe<CropLayer>);
-    REG_RUNTIME_LAYER_FUNC(ElemwiseNAry,    createLayerFromCaffe<ElemwiseNAryLayer>);
+    REG_RUNTIME_LAYER_FUNC(Eltwise,         createLayerFromCaffe<ElemwiseNAryLayer>);
     REG_RUNTIME_LAYER_FUNC(Permute,         createLayerFromCaffe<PermuteLayer>);
     REG_RUNTIME_LAYER_FUNC(PriorBox,        createLayerFromCaffe<PriorBoxLayer>);
     REG_RUNTIME_LAYER_FUNC(DetectionOutput, createLayerFromCaffe<DetectionOutputLayer>);
